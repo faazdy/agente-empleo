@@ -1,0 +1,21 @@
+# Virtual Environment
+venv/
+.venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Backups and local data
+_respaldo*/
+data/*.db
+data/*.db.bak
+data/*.json
+
+# Secrets
+.env
+.env.*
+!.env.example

@@ -1,0 +1,17 @@
+version: "3.8"
+
+services:
+  agente-empleo:
+    build: .
+    container_name: agente-empleo
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    networks:
+      - miguxld-network
+
+networks:
+  miguxld-network:
+    external: true
