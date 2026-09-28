@@ -9,10 +9,9 @@ from typing import Optional
 # Máximo de años de experiencia que el perfil puede cubrir (6 meses de experiencia real).
 MAX_YEARS_EXPERIENCE = 2
 
-# Ventana de frescura: hoy, ayer y hace 2 días. Coincide con pubdate=2 de Computrabajo
-# (verificado en vivo el 2026-09-25: pubdate=1 = hoy+ayer, pubdate=2 = incluye "Hace 2 días").
-# Con 2 días no se pierde nada aunque un día no se corra la sincronización.
-MAX_AGE_DAYS = 2
+# Ventana de frescura: hasta 4 días para cubrir cómodamente fines de semana (viernes a lunes).
+# Coincide con pubdate=7 de Computrabajo y fromage=7 de Indeed.
+MAX_AGE_DAYS = 4
 
 
 def posted_age_days(posted_str) -> Optional[float]:
@@ -146,6 +145,9 @@ PREFERRED_ROLES = [
     r"desarrollad", r"programad", r"software",
     r"full\s*stack", r"fullstack", r"backend", r"back[\s-]end", r"frontend", r"front[\s-]end",
     r"web\s*developer", r"developer",
+    # Roles junior / trainee / analista desarrollador
+    r"\btrainee\b", r"\bdesarrollador\s+trainee\b", r"\btrainee\s+(?:de\s+)?desarrollo\b",
+    r"analista\s+desarrollad",
     # Ingeniería formal (Ing., Ing, Ingeniero/a, de/en sistemas/software/datos)
     r"\b(?:ingenier[oa]|ing)[.,]?\s*(?:.*?\s+)?(?:de\s+|en\s+)?sistemas?",
     r"\b(?:ingenier[oa]|ing)[.,]?\s*(?:.*?\s+)?(?:de\s+|en\s+)?software",
@@ -157,16 +159,20 @@ PREFERRED_ROLES = [
     r"analista\s+(?:de\s+)?informaci[oó]n",
     # IA
     r"ai\s*engineer", r"ai\s*ops", r"inteligencia\s*artificial",
-    # QA / Testing
+    # QA / Testing / Calidad de software
     r"\bqa\b", r"tester\b", r"automatizaci[oó]n\s+de\s+pruebas",
-    # Soporte TI (cargo técnico de TI, no helpdesk de contact center)
+    r"analista\s+(?:de\s+)?qa\b", r"ingenier[oa]\s+(?:de\s+)?pruebas\b", r"qa\s*tester\b",
+    # Soporte TI y Sistemas (cargos técnicos afines a Ing. de Sistemas)
     r"soporte\s+ti\b",
     r"soporte\s+t[eé]cnico\s+(?:n[12]|l[12]|nivel|junior|senior|especialista|sistemas)?\s*$",
     r"analista\s+(?:de\s+)?sistemas?\b",
+    r"t[eé]cnico\s+(?:in\s+house\s+)?ti\b", r"t[eé]cnico\s+(?:de\s+)?sistemas\b",
+    r"auxiliar\s+de\s+sistemas\b", r"auxiliar\s+de\s+ti\b",
     # Infraestructura / DevOps / Cloud / Redes TI
     r"infraestructura\b", r"devops\b", r"ciberseguridad\b", r"cloud\b",
     r"redes\s+(?:y\s+seguridad|de\s+datos|cisco|ip|lan|wan|ti|inform[aá]ticas)\b",
     r"administrador\s+de\s+redes\b",
+    r"administrador(?:/a|\(a\)|a)?\s+de\s+sistemas\b", r"\bmiddleware\b",
 ]
 
 # Tecnologías fuertes: si aparecen en el título también justifican pedir el detalle.

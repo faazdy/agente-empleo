@@ -455,7 +455,7 @@ class TestIndeedHelpers:
     def test_build_url(self):
         from extractors.indeed import IndeedExtractor
         url = IndeedExtractor.build_url("desarrollador python", "Bogotá, D.C.")
-        assert url.startswith("https://co.indeed.com/jobs?") and "fromage=3" in url and "sort=date" in url
+        assert url.startswith("https://co.indeed.com/jobs?") and "fromage=7" in url and "sort=date" in url
         # Remoto: el filtro sc=... no funciona en co.indeed.com; se agrega "remoto" a la consulta
         rurl = IndeedExtractor.build_url("desarrollador", "Colombia", remote=True)
         assert "q=desarrollador+remoto" in rurl and "sc=" not in rurl and "l=Colombia" in rurl
@@ -549,8 +549,8 @@ class TestFreshnessAndCoverage:
     def test_is_fresh_window(self):
         from services.filters import is_fresh
         assert is_fresh("Hace 8 minutos") and is_fresh("Hace 9 horas") and is_fresh("Ayer")
-        assert is_fresh("Hace 2 días")          # pubdate=2 de Computrabajo
-        assert not is_fresh("Hace 3 días") and not is_fresh("Más de 30 días")
+        assert is_fresh("Hace 2 días") and is_fresh("Hace 3 días") and is_fresh("Hace 4 días")
+        assert not is_fresh("Hace 5 días") and not is_fresh("Más de 30 días")
         assert is_fresh(None) and is_fresh("fecha rara")  # ante la duda, no perder
 
     def test_non_software_programmers_filtered(self):
@@ -787,14 +787,15 @@ class TestIndeedFreshness:
         assert JobDatabase.is_fresh(_normalize_posted(old_pub, "hace 1 día"))        # reposteado ayer
         assert JobDatabase.is_fresh(_normalize_posted(old_pub, "Recién publicado"))
         assert JobDatabase.is_fresh(_normalize_posted(old_pub, "hace 2 días"))
-        assert not JobDatabase.is_fresh(_normalize_posted(old_pub, "hace 4 días"))
+        assert JobDatabase.is_fresh(_normalize_posted(old_pub, "hace 4 días"))
+        assert not JobDatabase.is_fresh(_normalize_posted(old_pub, "hace 5 días"))
         assert not JobDatabase.is_fresh(_normalize_posted(old_pub, "hace 30+ días"))
 
     def test_falls_back_to_pubdate_without_relative(self):
         import time
         from extractors.indeed import _normalize_posted
         assert JobDatabase.is_fresh(_normalize_posted((time.time() - 5 * 3600) * 1000, ""))
-        assert not JobDatabase.is_fresh(_normalize_posted((time.time() - 5 * 86400) * 1000, ""))
+        assert not JobDatabase.is_fresh(_normalize_posted((time.time() - 6 * 86400) * 1000, ""))
 
 
 

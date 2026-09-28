@@ -19,6 +19,43 @@ import json as _json
 import random
 from pathlib import Path as _Path
 
+# ---- Registro persistente: todo lo que se imprime también queda en data/radar.log ----
+import logging as _logging, logging.handlers as _lh, sys as _sys, os as _os
+_os.makedirs("data", exist_ok=True)
+_log_handler = _lh.RotatingFileHandler("data/radar.log", maxBytes=2_000_000, backupCount=2, encoding="utf-8")
+_log_handler.setFormatter(_logging.Formatter("%(asctime)s %(message)s"))
+radar_log = _logging.getLogger("radar")
+radar_log.setLevel(_logging.INFO)
+if not radar_log.handlers:
+    radar_log.addHandler(_log_handler)
+
+
+class _Tee:
+    """Duplica stdout/stderr en data/radar.log para poder diagnosticar sin ver la consola."""
+    def __init__(self, stream):
+        self.stream = stream
+    def write(self, msg):
+        try:
+            self.stream.write(msg)
+        except Exception:
+            pass
+        m = msg.rstrip()
+        if m:
+            radar_log.info(m)
+    def flush(self):
+        try:
+            self.stream.flush()
+        except Exception:
+            pass
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+
+
+if not isinstance(_sys.stdout, _Tee):
+    _sys.stdout = _Tee(_sys.stdout)
+    _sys.stderr = _Tee(_sys.stderr)
+
+
 app = FastAPI(title="Radar de Empleo - Miguel Vásquez", version="2.2.0")
 
 app.add_middleware(
@@ -308,6 +345,9 @@ INDEED_ENABLED = True
 INTER_QUERY_PAUSE = (6.0, 12.0)
 
 
+_last_store = {"guardadas": 0, "descartadas_filtro": 0}
+
+
 def _store_offers(offers, existing_ids) -> int:
     """Guarda y evalúa ofertas frescas. Retorna cuántas quedaron como 'matched'."""
     matched = 0
@@ -317,8 +357,11 @@ def _store_offers(offers, existing_ids) -> int:
         if db.save_offer(offer):
             score, reason, status = matcher.evaluate(offer)
             db.update_match(offer.id, score, reason, status)
+            _last_store["guardadas"] += 1
             if status == "matched":
                 matched += 1
+            else:
+                _last_store["descartadas_filtro"] += 1
             existing_ids.add(offer.id)
             if offer.external_id:
                 existing_ids.add(offer.external_id)
@@ -346,6 +389,8 @@ async def _run_sync_worker(portals=PORTALS, interactive: bool = True):
         existing_ids = db.get_existing_ids()
         new_count = 0
         extractor.new_session()  # una sola huella de navegador para todo el escaneo
+        report = {"started_at": _dt.datetime.now(_dt.timezone.utc).isoformat(), "portales": {}}
+        print(f"[SyncWorker] Inicio de escaneo: {', '.join(sync_state['portals'])}")
 
         try:
             # --- Fase 1: Computrabajo --------------------------------------
@@ -360,7 +405,7 @@ async def _run_sync_worker(portals=PORTALS, interactive: bool = True):
                         location=target["location"],
                         max_pages=target.get("max_pages", 1),
                         existing_ids=existing_ids,
-                        pubdate=2,  # hoy, ayer y hace 2 días (ordenado por fecha)
+                        pubdate=7,  # semana completa (recortado a MAX_AGE_DAYS por el filtro) para cubrir fin de semana
                     )
                     sync_state["total_scanned"] += len(offers)
                     new_count += _store_offers(offers, existing_ids)
@@ -371,6 +416,15 @@ async def _run_sync_worker(portals=PORTALS, interactive: bool = True):
                 sync_state["new_offers"] = new_count
                 sync_state["portal_errors"]["Computrabajo"] = str(wb)
                 print(f"[SyncWorker] {wb}")
+
+            if do_ct:
+                report["portales"]["Computrabajo"] = {
+                    **extractor.stats, "compatibles": new_count, **_last_store,
+                    "error": sync_state["portal_errors"].get("Computrabajo"),
+                }
+                print(f"[SyncWorker] Computrabajo: {report['portales']['Computrabajo']}")
+            _last_store.update(guardadas=0, descartadas_filtro=0)
+            ct_matched = new_count
 
             # --- Fase 2: Indeed (navegador real) ---------------------------
             if do_indeed:
@@ -405,16 +459,29 @@ async def _run_sync_worker(portals=PORTALS, interactive: bool = True):
                     sync_state["portal_errors"]["Indeed"] = f"Error en Indeed: {describe_error(e)}"
                 sync_state["new_offers"] = new_count
 
+            if do_indeed:
+                report["portales"]["Indeed"] = {
+                    **(indeed_extractor.stats or {}), "compatibles": new_count - ct_matched, **_last_store,
+                    "error": sync_state["portal_errors"].get("Indeed"),
+                }
+                print(f"[SyncWorker] Indeed: {report['portales']['Indeed']}")
+            _last_store.update(guardadas=0, descartadas_filtro=0)
+
             if sync_state["portal_errors"]:
                 sync_state["last_error"] = " | ".join(sync_state["portal_errors"].values())
 
         except Exception as e:
-            print(f"[SyncWorker] Error en escaneo: {e}")
-            sync_state["last_error"] = str(e)
+            traceback.print_exc()
+            sync_state["last_error"] = describe_error(e)
+            report["error_general"] = describe_error(e)
         finally:
             sync_state["is_running"] = False
             sync_state["total_in_db"] = len(db.get_offers())
-            _save_state({"last_full_sync_at": _dt.datetime.now(_dt.timezone.utc).isoformat()})
+            report["finished_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
+            report["compatibles_nuevas"] = new_count
+            sync_state["report"] = report
+            _save_state({"last_full_sync_at": report["finished_at"], "last_report": report})
+            print(f"[SyncWorker] Fin: {new_count} nuevas compatibles")
 
 
 @app.post("/api/sync")
@@ -434,6 +501,22 @@ async def sync_offers(portal: str = Query("all", description="all | computrabajo
 @app.get("/api/sync/status")
 def get_sync_status():
     return sync_state
+
+
+@app.get("/api/sync/report")
+def get_sync_report():
+    """Resumen del último escaneo (persistente: sobrevive reinicios)."""
+    return _load_state().get("last_report") or {}
+
+
+@app.get("/api/log")
+def get_log(lines: int = Query(80, ge=1, le=1000)):
+    """Últimas líneas de data/radar.log (diagnóstico)."""
+    try:
+        with open("data/radar.log", encoding="utf-8", errors="replace") as f:
+            return {"lines": f.read().splitlines()[-lines:]}
+    except FileNotFoundError:
+        return {"lines": []}
 
 
 @app.post("/api/guard/clear")
@@ -580,7 +663,7 @@ async def _run_alert_scan() -> int:
                     location=target["location"],
                     max_pages=1,
                     existing_ids=existing_ids,
-                    pubdate=2,  # hoy, ayer y hace 2 días (ordenado por fecha)
+                    pubdate=7,  # semana completa (recortado a MAX_AGE_DAYS por el filtro)
                 )
                 new_count += _store_offers(offers, existing_ids)
             except WafBlocked as wb:
@@ -988,6 +1071,7 @@ def get_dashboard_html():
         <i class="fa-solid fa-inbox"></i>
       </div>
       <h3 class="text-sm font-bold text-[#0f172a] mb-1">No hay vacantes en esta sección</h3>
+      <div id="lastScanSummary" class="hidden max-w-xl mx-auto mb-3 p-3 rounded-lg bg-white border border-[#e2e8f0] text-[11px] text-[#64748b] text-left leading-relaxed"></div>
       <p class="text-xs text-[#64748b] max-w-sm mx-auto mb-4">Probá cambiando de pestaña o realizando un nuevo escaneo.</p>
       <button onclick="syncJobs()" class="px-4 py-2 rounded-lg bg-[#e11d48] hover:bg-[#be123c] text-white font-bold text-xs transition shadow-lg shadow-[#e11d48]/20">
         Escanear Ofertas Ahora
@@ -1529,8 +1613,10 @@ def get_dashboard_html():
 
             if (status.last_error) {
               showToast(`Aviso: ${status.last_error}`, 'warning');
-            } else {
+            } else if (status.new_offers > 0) {
               showToast(`¡Rastreo finalizado! +${status.new_offers} nuevas ofertas compatibles`, 'success');
+            } else {
+              showToast('Rastreo finalizado: no hay vacantes nuevas compatibles desde el último escaneo', 'info');
             }
             loadOffers();
             loadStats();
@@ -1688,11 +1774,26 @@ def get_dashboard_html():
       return d === 1 ? 'ayer' : `hace ${d} días`;
     }
 
+    function reportSummary(rep) {
+      if (!rep || !rep.portales) return '';
+      const parts = Object.entries(rep.portales).map(([p, r]) => {
+        if (r.error && !r.vistas) return `<b>${p}</b>: <span class="text-[#b45309]">${escapeHtml(r.error)}</span>`;
+        return `<b>${p}</b>: ${r.vistas || 0} revisadas · ${r.ya_conocidas || 0} ya conocidas · ${r.viejas || 0} de más de 2 días · ${r.titulo_no_afin || 0} no afines · <b>${r.compatibles || 0} nuevas compatibles</b>`;
+      });
+      return parts.join('<br>');
+    }
+
     async function refreshStatusBanner() {
       const get = (u) => fetch(u).then(r => r.json()).catch(() => null);
-      const [g, s, d, b] = await Promise.all([
-        get('/api/guard/status'), get('/api/sync/status'), get('/api/daily/status'), get('/api/browser/status')
+      const [g, s, d, b, rep] = await Promise.all([
+        get('/api/guard/status'), get('/api/sync/status'), get('/api/daily/status'), get('/api/browser/status'), get('/api/sync/report')
       ]);
+      const summaryEl = document.getElementById('lastScanSummary');
+      if (summaryEl) {
+        const html = reportSummary(rep);
+        summaryEl.innerHTML = html ? `<div class="font-semibold text-[#0f172a] mb-1">Último escaneo (${relTime(rep.finished_at)})</div>${html}` : '';
+        summaryEl.classList.toggle('hidden', !html);
+      }
       // --- estado de sincronización (encabezado)
       const info = document.getElementById('syncInfo');
       if (info && d) {

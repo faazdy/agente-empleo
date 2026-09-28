@@ -38,6 +38,9 @@ CHALLENGE_TITLES = (
 # Bloqueo real: no se resuelve esperando.
 HARD_BLOCK_TITLES = ("access denied", "acceso denegado", "403 forbidden", "error 1020", "you have been blocked")
 
+# Pantallas de login: si Indeed redirige a login, pedir a la persona que inicie sesión
+LOGIN_TITLES = ("iniciar sesión", "iniciar sesion", "cuentas indeed", "sign in", "log in")
+
 AUTO_WAIT_ROUNDS = 12          # x 2.5 s: espera a que la verificación se resuelva sola
 HUMAN_WAIT_ROUNDS = 60         # x 3 s: tiempo para que la persona la resuelva en la ventana
 
@@ -47,9 +50,14 @@ def _is_challenge(title: str) -> bool:
     return any(m in t for m in CHALLENGE_TITLES)
 
 
+def _is_login(title: str) -> bool:
+    t = (title or "").lower()
+    return any(m in t for m in LOGIN_TITLES)
+
+
 def _is_hard_block(status: int, title: str) -> bool:
     t = (title or "").lower()
-    return any(m in t for m in HARD_BLOCK_TITLES) or (status in (403, 429) and not _is_challenge(t))
+    return any(m in t for m in HARD_BLOCK_TITLES) or (status in (403, 429) and not _is_challenge(t) and not _is_login(t))
 
 
 # Lee las tarjetas de resultados. Primero intenta el JSON embebido (mosaic), luego el DOM.
@@ -151,6 +159,7 @@ class IndeedExtractor(BaseExtractor):
         # controller_factory permite inyectar un controlador falso en pruebas
         self._controller_factory = controller_factory
         self.max_details_per_session = max_details_per_session
+        self.stats = {}
         self.detail_attempts = 0
         self.detail_failures = 0   # descripciones que no se pudieron leer (¿cambió el marcado?)
         self.interactive = True    # si hay verificación, mostrar la ventana para que la persona la resuelva
@@ -171,8 +180,8 @@ class IndeedExtractor(BaseExtractor):
         con l=Colombia sí trae vacantes reales con ubicación "Desde casa".
         """
         q = f"{query} remoto" if remote and "remot" not in query.lower() else query
-        # fromage=3 (Indeed solo ofrece 1, 3, 7, 14 días); luego se recorta a la ventana del radar
-        params = {"q": q, "l": location, "fromage": "3", "sort": "date"}
+        # fromage=7 (semana completa; luego se recorta a MAX_AGE_DAYS por el radar)
+        params = {"q": q, "l": location, "fromage": "7", "sort": "date"}
         if start:
             params["start"] = str(start)
         return f"{BASE_URL}/jobs?{urllib.parse.urlencode(params)}"
@@ -218,6 +227,20 @@ class IndeedExtractor(BaseExtractor):
         guard.mark_verification(self.portal_name, "verificación sin resolver")
         raise VerificationRequired(self.portal_name, "sin resolver")
 
+    async def _resolve_login(self, page) -> None:
+        """Si Indeed redirige a login, muestra la ventana para que la persona inicie sesión."""
+        if not self.interactive:
+            return
+        self._say("Indeed pide iniciar sesión: inicia sesión en la ventana del radar (esperando hasta 2 min)...")
+        await self._window(page, True)
+        for _ in range(40):  # hasta 2 minutos
+            await asyncio.sleep(3.0)
+            if not _is_login(await page.title()):
+                await self._window(page, False)
+                self._say("")
+                return
+        await self._window(page, False)
+
     async def _goto(self, page, url: str) -> None:
         resp = await page.goto(url, wait_until="domcontentloaded", timeout=45000)
         await asyncio.sleep(random.uniform(2.0, 3.5))  # deja cargar el JS como una persona
@@ -225,6 +248,11 @@ class IndeedExtractor(BaseExtractor):
         title = (await page.title()) or ""
         if _is_challenge(title):
             await self._resolve_challenge(page)   # espera / pide ayuda; lanza VerificationRequired si no se resuelve
+            await asyncio.sleep(random.uniform(1.5, 2.5))
+            title = (await page.title()) or ""
+            status = 200
+        if _is_login(title):
+            await self._resolve_login(page)
             await asyncio.sleep(random.uniform(1.5, 2.5))
             title = (await page.title()) or ""
             status = 200
@@ -265,6 +293,7 @@ class IndeedExtractor(BaseExtractor):
                            on_progress=None) -> List[JobOffer]:
         guard.check(self.portal_name)
         self.detail_attempts = self.detail_failures = 0
+        self.stats = {"paginas": 0, "vistas": 0, "ya_conocidas": 0, "viejas": 0, "titulo_no_afin": 0, "nuevas": 0}
         known = existing_ids if existing_ids is not None else set()
         offers: List[JobOffer] = []
         details_left = self.max_details_per_session
@@ -282,6 +311,10 @@ class IndeedExtractor(BaseExtractor):
                     try:
                         await self._goto(page, url)
                         items = await page.evaluate(_RESULTS_JS)
+                        self.stats["paginas"] += 1
+                        self.stats["vistas"] += len(items or [])
+                        if not items:
+                            print(f"[IndeedExtractor] '{t['query']}': página sin resultados (título '{(await page.title())[:60]}')")
                         next_href = await page.evaluate(
                             "() => { const a = document.querySelector('[data-testid=\"pagination-page-next\"]');"
                             " return a ? a.getAttribute('href') : null; }"
@@ -298,9 +331,14 @@ class IndeedExtractor(BaseExtractor):
                         job_url = f"{BASE_URL}/viewjob?jk={jk}"
                         sig = f"{title.lower()}::{company.lower()}"
                         if not jk or not title or jk in known or job_url in known or sig in known:
+                            self.stats["ya_conocidas"] += 1
                             continue
                         posted = _normalize_posted(it.get("pubDate"), it.get("relative", ""))
-                        if not is_fresh(posted) or not is_promising_title(title):
+                        if not is_fresh(posted):
+                            self.stats["viejas"] += 1
+                            continue
+                        if not is_promising_title(title):
+                            self.stats["titulo_no_afin"] += 1
                             continue
                         description = it.get("snippet") or ""
                         if details_left > 0:
@@ -323,6 +361,7 @@ class IndeedExtractor(BaseExtractor):
                             requirements=[], url=job_url, posted_date=posted,
                         )
                         offers.append(offer)
+                        self.stats["nuevas"] += 1
                         known.update({offer.id, jk, job_url, sig})
                     if not next_href:
                         break

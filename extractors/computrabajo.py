@@ -41,8 +41,9 @@ class ComputrabajoExtractor(BaseExtractor):
         self.new_session()
 
     def new_session(self) -> None:
-        """Elige una huella de navegador para toda la sesión de escaneo."""
+        """Elige una huella de navegador para toda la sesión de escaneo y reinicia los contadores."""
         self._profile = random.choice(BROWSER_PROFILES)
+        self.stats = {"paginas": 0, "vistas": 0, "ya_conocidas": 0, "viejas": 0, "titulo_no_afin": 0, "nuevas": 0}
 
     def _get_headers(self) -> dict:
         headers = {
@@ -131,6 +132,10 @@ class ComputrabajoExtractor(BaseExtractor):
 
                     soup = BeautifulSoup(response.text, "html.parser")
                     articles = soup.find_all("article", class_="box_offer")
+                    self.stats["paginas"] += 1
+                    self.stats["vistas"] += len(articles)
+                    if not articles and page == 1:
+                        print(f"[ComputrabajoExtractor] '{query}' ({location}): página sin vacantes (HTTP 200, {len(response.text)} bytes)")
                     if not articles:
                         break
                     has_next = bool(soup.find(attrs={"title": "Siguiente"}) or
@@ -140,6 +145,7 @@ class ComputrabajoExtractor(BaseExtractor):
                     for art in articles:
                         offer_id = art.get("data-id")
                         if offer_id and (offer_id in known_ids or f"computrabajo-{offer_id}" in known_ids):
+                            self.stats["ya_conocidas"] += 1
                             continue
 
                         title_tag = art.find("a", class_="js-o-link")
@@ -152,16 +158,19 @@ class ComputrabajoExtractor(BaseExtractor):
                         date_p = art.find("p", class_="fc_aux")
                         posted_date = date_p.get_text(strip=True) if date_p else None
                         if not is_fresh(posted_date):
+                            self.stats["viejas"] += 1
                             continue
 
                         # Filtro previo: Si el título no es tecnológico o es basura, no gastar requests de detalle
                         if not self._is_promising_job(title):
+                            self.stats["titulo_no_afin"] += 1
                             continue
 
                         rel_link = title_tag.get("href", "")
                         clean_rel = rel_link.split("#")[0]
                         job_url = f"{self.base_url}{clean_rel}" if clean_rel.startswith("/") else clean_rel
                         if job_url in known_ids:
+                            self.stats["ya_conocidas"] += 1
                             continue
 
                         company_tag = art.find("a", attrs={"offer-grid-article-company-url": True}) or art.find("a", class_="t_ellipsis")
@@ -169,6 +178,7 @@ class ComputrabajoExtractor(BaseExtractor):
 
                         sig = f"{title.strip().lower()}::{company.strip().lower()}"
                         if sig in known_ids:
+                            self.stats["ya_conocidas"] += 1
                             continue
 
                         # Ubicación
@@ -229,6 +239,7 @@ class ComputrabajoExtractor(BaseExtractor):
                             continue
 
                         offers.append(offer)
+                        self.stats["nuevas"] += 1
                         known_ids.add(offer.id)
                         if offer_id:
                             known_ids.add(offer_id)

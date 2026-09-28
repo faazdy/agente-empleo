@@ -14,6 +14,7 @@ _respaldo*/
 data/*.db
 data/*.db.bak
 data/*.json
+data/*.log
 
 # Secrets
 .env
