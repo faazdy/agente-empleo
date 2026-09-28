@@ -312,13 +312,21 @@ SEARCH_TARGETS = [
     {"query": "qa", "location": "bogota-dc", "max_pages": 2},
     {"query": "inteligencia artificial", "location": "bogota-dc", "max_pages": 2},
     {"query": "junior", "location": "bogota-dc", "max_pages": 3},
-    # 100% remoto en todo el país. El slug correcto es "remoto": "teletrabajo" devolvía
-    # 1 vacante contra 4 reales en la prueba del 2026-09-25.
+    {"query": "trainee", "location": "bogota-dc", "max_pages": 2},
+    {"query": "javascript", "location": "bogota-dc", "max_pages": 2},
+    {"query": "node", "location": "bogota-dc", "max_pages": 2},
+    # 100% remoto en todo el país (postulación válida viviendo en Bogotá).
     {"query": "desarrollador", "location": "remoto", "max_pages": 2},
     {"query": "programador", "location": "remoto", "max_pages": 2},
     {"query": "analista de datos", "location": "remoto", "max_pages": 2},
     {"query": "python", "location": "remoto", "max_pages": 2},
+    {"query": "react", "location": "remoto", "max_pages": 2},
     {"query": "full stack", "location": "remoto", "max_pages": 2},
+    {"query": "backend", "location": "remoto", "max_pages": 2},
+    {"query": "frontend", "location": "remoto", "max_pages": 2},
+    {"query": "software", "location": "remoto", "max_pages": 2},
+    {"query": "ingeniero de sistemas", "location": "remoto", "max_pages": 2},
+    {"query": "qa", "location": "remoto", "max_pages": 2},
 ]
 
 # Indeed Colombia (vía navegador real por CDP: Edge o Brave). Cada página es una navegación

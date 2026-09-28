@@ -310,7 +310,12 @@ class IndeedExtractor(BaseExtractor):
                     await asyncio.sleep(random.uniform(6.0, 10.0))
                     try:
                         await self._goto(page, url)
-                        items = await page.evaluate(_RESULTS_JS)
+                        items = []
+                        for _ in range(6):
+                            items = await page.evaluate(_RESULTS_JS)
+                            if items:
+                                break
+                            await asyncio.sleep(1.0)
                         self.stats["paginas"] += 1
                         self.stats["vistas"] += len(items or [])
                         if not items:
