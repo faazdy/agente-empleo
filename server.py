@@ -630,7 +630,6 @@ ALERT_TARGETS = [
     {"query": "ingeniero de sistemas",   "location": "bogota-dc",  "max_pages": 1},
     {"query": "ingeniero de software",   "location": "bogota-dc",  "max_pages": 1},
     {"query": "qa software",             "location": "bogota-dc",  "max_pages": 1},
-    {"query": "soporte ti",              "location": "bogota-dc",  "max_pages": 1},
     # Datos y BI (Bogotá)
     {"query": "analista de datos",       "location": "bogota-dc",  "max_pages": 1},
     {"query": "analista bi",             "location": "bogota-dc",  "max_pages": 1},
