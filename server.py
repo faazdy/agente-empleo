@@ -1549,6 +1549,11 @@ def get_dashboard_html():
     }
 
     async function setJobStatus(id, newStatus) {
+      if (newStatus === 'applied') {
+        if (!confirm('¿Estás seguro de que deseas marcar esta vacante como postulada?')) {
+          return;
+        }
+      }
       try {
         const res = await fetch(`/api/offers/${id}/status`, {
           method: 'POST',
