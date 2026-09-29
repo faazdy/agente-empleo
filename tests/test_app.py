@@ -172,10 +172,10 @@ class TestMatcherEngine:
         assert status == "matched" and "Semi Senior" in reason
 
     def test_years_of_experience_discard(self):
-        """Si la descripción pide más de 2 años, se descarta."""
-        offer = make_offer("Desarrollador Python", "Requisitos: mínimo tres (3) años de experiencia con Python y SQL")
+        """Si la descripción pide más de 3 años (p. ej. 4 años), se descarta."""
+        offer = make_offer("Desarrollador Python", "Requisitos: mínimo cuatro (4) años de experiencia con Python y SQL")
         _, reason, status = self.matcher.evaluate(offer)
-        assert status == "discarded" and "3 años" in reason
+        assert status == "discarded" and "4 años" in reason
 
     def test_years_in_requirements_list_are_read(self):
         offer = make_offer("Desarrollador React", "React, TypeScript")

@@ -6,8 +6,8 @@ Antes había dos listas de exclusión distintas que se desalinearon.
 import re
 from typing import Optional
 
-# Máximo de años de experiencia que el perfil puede cubrir (6 meses de experiencia real).
-MAX_YEARS_EXPERIENCE = 2
+# Máximo de años de experiencia que el perfil puede cubrir (hasta 3 años tolerado con penalización).
+MAX_YEARS_EXPERIENCE = 3
 
 # Ventana de frescura: hasta 4 días para cubrir cómodamente fines de semana (viernes a lunes).
 # Coincide con pubdate=7 de Computrabajo y fromage=7 de Indeed.
@@ -130,8 +130,11 @@ TITLE_NEGATIVE_PATTERNS = [
     r"\brecepcionista\b",
     r"\bauxiliar administrativo\b",
     r"\bagente\s+de\s+soporte\b",
-    r"\bagente\s+(?:de\s+)?contact\b",
     r"\bcoordinador\s+(?:de\s+)?(?:ventas|comercial|log[ií]stica|distribuci[oó]n)\b",
+    # Roles legales / jurídicos
+    r"\babogad[oa]s?\b", r"\bjur[ií]dic[oa]s?\b", r"\blegal\b",
+    # Marketing digital / redes / contenido
+    r"\bredes\s+sociales\b", r"\bcommunity\s+manager\b", r"\bcreaci[oó]n\s+de\s+contenido\b",
 ]
 
 BODY_NEGATIVE_PATTERNS = [

@@ -308,7 +308,6 @@ SEARCH_TARGETS = [
     {"query": "analista bi", "location": "bogota-dc", "max_pages": 2},
     {"query": "sql", "location": "bogota-dc", "max_pages": 2},
     {"query": "analista de sistemas", "location": "bogota-dc", "max_pages": 2},
-    {"query": "soporte ti", "location": "bogota-dc", "max_pages": 2},
     {"query": "qa", "location": "bogota-dc", "max_pages": 2},
     {"query": "inteligencia artificial", "location": "bogota-dc", "max_pages": 2},
     {"query": "junior", "location": "bogota-dc", "max_pages": 3},

@@ -142,7 +142,7 @@ class MatcherEngine:
         if SEMI_SENIOR_PATTERN.search(title_lower):
             score = max(15.0, score - 10.0)
             reasons.append("Semi Senior (-10)")
-        if years is not None and years == max_years:
+        if years is not None and years >= 2:
             score = max(15.0, score - 10.0)
             reasons.append(f"Pide {years} años (-10)")
         elif years is not None:
