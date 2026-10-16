@@ -13,6 +13,10 @@ MAX_YEARS_EXPERIENCE = 3
 # Coincide con pubdate=7 de Computrabajo y fromage=7 de Indeed.
 MAX_AGE_DAYS = 4
 
+# Ventana propia de elempleo.com: 4 días hacia atrás (primer barrido del portal, aún sin
+# postulaciones allí). Se puede subir o bajar sin afectar a Computrabajo ni a Indeed.
+ELEMPLEO_MAX_AGE_DAYS = 4
+
 
 def posted_age_days(posted_str) -> Optional[float]:
     """Antigüedad en días de textos tipo 'Hace 3 horas', 'Ayer', 'Hace 2 días'. None si no se reconoce."""
@@ -26,6 +30,12 @@ def posted_age_days(posted_str) -> Optional[float]:
     m = re.search(r"(\d+)\s*d[ií]as?", s)
     if m:
         return float(m.group(1))
+    # elempleo: "Hace 1 semana", "Hace 2 semanas"
+    m = re.search(r"(\d+)\s*semanas?", s)
+    if m:
+        return float(m.group(1)) * 7
+    if "semana" in s:
+        return 7.0
     if "más de 30" in s or "mas de 30" in s or "mes" in s:
         return 31.0
     return None

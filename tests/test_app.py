@@ -927,3 +927,168 @@ class TestIndeedChallenge:
             assert (await ac.post("/api/guard/clear?portal=indeed")).status_code == 200
             assert (await ac.post("/api/guard/clear?portal=otro")).status_code == 400
         assert g.blocked_until("Indeed") is None
+
+
+# ─────────────────────────────────────────────
+# elempleo.com (API JSON del portal)
+# ─────────────────────────────────────────────
+
+_EE_PAGE = """<html><body>
+<span class="hidden js-search-api-token">
+    <input name="__RequestVerificationToken" type="hidden" value="TOKEN-1">
+</span></body></html>"""
+
+
+def _ee_item(i, title, when, remote=False, company="Acme SAS", desc="Buscamos desarrollador junior con 1 año de experiencia en Python."):
+    return {
+        "id": 1886700000 + i, "title": title, "companyName": company, "city": "Bogotá",
+        "salaryInfo": "$4 a $4,5 millones", "description": desc + "\r<br/>Híbrido.",
+        "publishDateInfo": when, "isRemote": remote, "isHybrid": not remote,
+        "idworkmodalitytxt": "Remoto" if remote else "Híbrido", "contracttypetxt": "Indefinido",
+        "jobOfferUrl": f"https://www.elempleo.com/co/ofertas-trabajo/x-{1886700000 + i}?trabajo=desarrollador",
+        "keyWords": [{"keyWord": "Python"}], "positionStructures": "Desarrollador",
+    }
+
+
+def _ee_patch(monkeypatch, pages, post_status=None):
+    """Simula GET (página con token) y POST (API) de elempleo sin red."""
+    import httpx
+    import extractors.elempleo as ee
+    calls = {"get": 0, "post": [], "tokens": []}
+
+    async def no_sleep(_):
+        return None
+    monkeypatch.setattr(ee.asyncio, "sleep", no_sleep)
+
+    async def fake_get(self, url, **kw):
+        calls["get"] += 1
+        return httpx.Response(200, text=_EE_PAGE, request=httpx.Request("GET", url))
+
+    async def fake_post(self, url, content=None, headers=None, **kw):
+        import json as _j
+        body = _j.loads(content)
+        calls["post"].append(body)
+        calls["tokens"].append((headers or {}).get("__RequestVerificationToken"))
+        if post_status:
+            st = post_status(len(calls["post"]))
+            if st != 200:
+                return httpx.Response(st, json={"message": "x"}, request=httpx.Request("POST", url))
+        res = pages.get(body["pageIndex"], [])
+        return httpx.Response(200, json={"results": res, "paginationInfo": {"totalPages": len(pages)}},
+                              request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    return calls
+
+
+@pytest.mark.anyio
+async def test_elempleo_window_is_4_days_and_sorted_by_date(monkeypatch, tmp_path):
+    import extractors.elempleo as ee
+    from core.guard import ScrapeGuard
+    monkeypatch.setattr(ee, "guard", ScrapeGuard(str(tmp_path / "c.json")))
+    page1 = [_ee_item(1, "Desarrollador full stack junior", "Hoy"),
+             _ee_item(2, "Programador python", "Ayer"),
+             _ee_item(3, "Desarrollador react", "Hace 4 días"),
+             _ee_item(4, "Desarrollador backend", "Hace 5 días"),
+             _ee_item(5, "Asesor comercial", "Hoy")]
+    calls = _ee_patch(monkeypatch, {1: page1, 2: [_ee_item(9, "Desarrollador viejo", "Hace 2 semanas")]})
+    ex = ee.ElempleoExtractor()
+    offers = await ex.search_many([{"query": "desarrollador", "max_pages": 3}], set())
+    titles = [o.title for o in offers]
+    assert titles == ["Desarrollador full stack junior", "Programador python", "Desarrollador react"]
+    assert ex.stats["viejas"] >= 1 and ex.stats["titulo_no_afin"] == 1
+    body = calls["post"][0]
+    assert body["sortExpression"] == "PublishDate_Desc" and body["sortBy"] == "" and body["cities"] == [34]
+    assert calls["tokens"][0] == "TOKEN-1"
+    o = offers[0]
+    assert o.portal == "Elempleo" and o.external_id.startswith("elempleo-")
+    assert "?" not in o.url and "<br" not in o.description and o.modality == "Híbrido"
+
+
+@pytest.mark.anyio
+async def test_elempleo_remote_only_and_dedupe(monkeypatch, tmp_path):
+    import extractors.elempleo as ee
+    from core.guard import ScrapeGuard
+    monkeypatch.setattr(ee, "guard", ScrapeGuard(str(tmp_path / "c.json")))
+    page = [_ee_item(1, "Desarrollador python", "Hoy", remote=True),
+            _ee_item(2, "Desarrollador java", "Hoy", remote=False)]
+    calls = _ee_patch(monkeypatch, {1: page})
+    known = set()
+    ex = ee.ElempleoExtractor()
+    offers = await ex.search_many([{"query": "desarrollador", "max_pages": 1, "remote": True},
+                                   {"query": "python", "max_pages": 1, "remote": True}], known)
+    assert [o.title for o in offers] == ["Desarrollador python"]  # la 2.ª consulta no la repite
+    assert calls["post"][0]["cities"] == [] and ex.stats["no_remotas"] >= 1
+    assert calls["get"] == 1  # una sola sesión (cookies + token) para todas las consultas
+
+
+@pytest.mark.anyio
+async def test_elempleo_401_renews_token_once(monkeypatch, tmp_path):
+    import extractors.elempleo as ee
+    from core.guard import ScrapeGuard
+    monkeypatch.setattr(ee, "guard", ScrapeGuard(str(tmp_path / "c.json")))
+    calls = _ee_patch(monkeypatch, {1: [_ee_item(1, "Desarrollador python", "Hoy")]},
+                      post_status=lambda n: 401 if n == 1 else 200)
+    offers = await ee.ElempleoExtractor().search_many([{"query": "desarrollador", "max_pages": 1}], set())
+    assert len(offers) == 1 and calls["get"] == 2
+
+
+@pytest.mark.anyio
+async def test_elempleo_403_trips_guard(monkeypatch, tmp_path):
+    import extractors.elempleo as ee
+    from core.guard import ScrapeGuard, WafBlocked
+    g = ScrapeGuard(str(tmp_path / "c.json"))
+    monkeypatch.setattr(ee, "guard", g)
+    _ee_patch(monkeypatch, {1: []}, post_status=lambda n: 403)
+    with pytest.raises(WafBlocked):
+        await ee.ElempleoExtractor().search_many([{"query": "desarrollador", "max_pages": 1}], set())
+    assert g.blocked_until("Elempleo") is not None
+
+
+def test_elempleo_html_fallback_parses_cards():
+    from extractors.elempleo import ElempleoExtractor
+    html = """<div class="result-item"><div class="js-area-bind" data-url="/co/ofertas-trabajo/programador-junior-1886769150"
+      data-ga4-offerdata='{"id":1886769150,"title":"Programador de software junior","company":"GESTION COMPETITIVA SAS","location":"Bogotá","salary":"$2 a $2,5 millones","equivalentPositions":"Programador","tags":"programador web,desarrollador"}'>
+      <div class="js-work-modality hide">- Hibrido</div></div>
+      <span class="js-offer-date"><i></i> Ayer </span></div>"""
+    [(offer, age)] = ElempleoExtractor().offers_from_html(html)
+    assert offer.title == "Programador de software junior" and offer.company == "GESTION COMPETITIVA SAS"
+    assert age == 1.0 and offer.modality == "Híbrido" and offer.url.endswith("-1886769150")
+
+
+def test_elempleo_dates_are_understood():
+    from services.filters import is_fresh, posted_age_days, ELEMPLEO_MAX_AGE_DAYS
+    assert ELEMPLEO_MAX_AGE_DAYS == 4
+    assert posted_age_days("Hoy") == 0 and posted_age_days("Hace 1 semana") == 7
+    assert not is_fresh("Hace 2 semanas") and not is_fresh("Hace 1 mes")
+    assert JobDatabase._parse_posted_age_hours("Hoy") < JobDatabase._parse_posted_age_hours("Ayer")
+
+
+@pytest.mark.anyio
+async def test_sync_elempleo_only_does_not_touch_other_portals(monkeypatch):
+    import server
+    calls = {"ct": 0, "indeed": 0, "ee": 0}
+    async def fake_ct(**kw):
+        calls["ct"] += 1
+        return []
+    async def fake_indeed(*a, **kw):
+        calls["indeed"] += 1
+        return []
+    async def fake_ee(targets, existing_ids=None, on_progress=None, **kw):
+        calls["ee"] += 1
+        return []
+    monkeypatch.setattr(server.extractor, "search_jobs", lambda **kw: fake_ct(**kw))
+    monkeypatch.setattr(server.indeed_extractor, "search_many", fake_indeed)
+    monkeypatch.setattr(server.elempleo_extractor, "search_many", fake_ee)
+    async def no_sleep(_): return None
+    monkeypatch.setattr(server.asyncio, "sleep", no_sleep)
+    monkeypatch.setattr(server, "_save_state", lambda u: None)
+    await server._run_sync_worker(("elempleo",))
+    assert calls == {"ct": 0, "indeed": 0, "ee": 1}
+    assert server.sync_state["total_queries"] == len(server.ELEMPLEO_TARGETS)
+    assert "elempleo" in server.sync_state["report"]["portales"]
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        monkeypatch.setattr(server, "_run_sync_worker", lambda *a, **k: no_sleep(0))
+        r = await ac.post("/api/sync?portal=elempleo")
+        assert r.status_code == 200

@@ -1,6 +1,6 @@
 # Radar de Empleo — Agente de búsqueda de vacantes (MVL-PRY-0022)
 
-Busca vacantes en **Computrabajo** e **Indeed Colombia**, las filtra según el perfil
+Busca vacantes en **Computrabajo**, **elempleo.com** e **Indeed Colombia**, las filtra según el perfil
 (primer cargo como desarrollador, Jr, Bogotá o remoto) y las ordena en un dashboard.
 La postulación la hace la persona desde el dashboard: el sistema **no** postula solo.
 
@@ -18,6 +18,7 @@ La postulación la hace la persona desde el dashboard: el sistema **no** postula
 | `services/matcher.py` | Puntaje de afinidad con el perfil |
 | `services/qa_bank.py` | Banco de respuestas para preguntas de filtro |
 | `extractors/computrabajo.py` | Extractor HTTPX con huella de navegador coherente por sesión |
+| `extractors/elempleo.py` | Extractor de elempleo.com: API JSON del portal (token + cookies), sin navegador ni peticiones de detalle |
 | `extractors/indeed.py` | Extractor de Indeed usando el navegador real |
 | `tests/test_app.py` | Pruebas (`pytest`) |
 
@@ -27,7 +28,7 @@ La postulación la hace la persona desde el dashboard: el sistema **no** postula
    solo en `http://localhost:8000`. No uses `--reload`: sin él uvicorn usa el bucle de eventos correcto en Windows
    (aun así, la parte del navegador corre aislada en su propio bucle y funciona en ambos casos).
    Variables opcionales: `RADAR_PORT`, `RADAR_HOST`, `RADAR_NO_BROWSER=1`.
-2. **Escanear ahora** recorre Computrabajo y luego Indeed. Para Indeed la app abre sola Microsoft Edge
+2. **Escanear ahora** recorre Computrabajo, luego elempleo y luego Indeed (en el menú hay "Escanear solo elempleo"). Para Indeed la app abre sola Microsoft Edge
    (o Brave si no hay Edge) con un perfil dedicado en `%LOCALAPPDATA%\RadarEmpleo\navegador-perfil`,
    fuera de la pantalla, y lo cierra al terminar. No toca tu Edge personal.
 3. **Navegador del radar** (botón del encabezado) abre ese mismo navegador visible, para iniciar sesión
@@ -46,14 +47,19 @@ La postulación la hace la persona desde el dashboard: el sistema **no** postula
   (`GET /api/guard/status` para verlo; borra la entrada de `data/cooldown.json` para levantarlo a mano).
 - Computrabajo: una sola huella de navegador por sesión, pausas de 3.5–5.5 s por página, 3–5 s por detalle
   y 6–12 s extra entre consultas. Indeed: pausas de 6–10 s y máximo 25 detalles por sesión.
-- Modo alerta: solo Computrabajo, página 1, cada 45 min y únicamente de 07:00 a 21:00 (hora Bogotá).
+- Modo alerta: Computrabajo y elempleo, página 1, cada 45 min y únicamente de 07:00 a 21:00 (hora Bogotá).
+- elempleo: una sola sesión (cookies + token) por escaneo, 50 vacantes con descripción por petición,
+  pausas de 3-5 s entre páginas y 6-12 s entre consultas; 401 renueva el token una vez; 403/429 = enfriamiento.
 
 ## Cobertura (verificada en vivo el 2026-09-25)
 
 - Computrabajo se consulta **ordenado por fecha** (`by=publicationtime`) y se pagina mientras haya "Siguiente".
   Antes: orden por relevancia y tope de 2 páginas → en "desarrollador" (48 vacantes, 3 páginas) quedaban fuera
   vacantes de "Hace 4 horas" que aparecían en la página 3.
-- Ventana de frescura: hoy, ayer y hace 2 días (`pubdate=2`, `MAX_AGE_DAYS`). La fecha se revisa antes de pedir el detalle.
+- Ventana de frescura: hasta 4 días (`MAX_AGE_DAYS`; Computrabajo con `pubdate=7` recortado por el filtro). La fecha se revisa antes de pedir el detalle.
+- elempleo tiene su propia ventana, `ELEMPLEO_MAX_AGE_DAYS = 4` (en `services/filters.py`). Se consulta ordenado por fecha
+  (`PublishDate_Desc`) y se deja de paginar cuando la mitad de la página ya está fuera de la ventana. Entiende "Hoy", "Ayer",
+  "Hace N días" y "Hace N semanas". Si la API del portal cambia, usa como respaldo el HTML de resultados (página 1).
 - Remoto: el slug correcto es `remoto` (`teletrabajo` devolvía 1 vacante contra 4 reales).
 - Consultas amplias (`desarrollador`, `programador`, `ingeniero de sistemas`, `analista de datos`) más específicas
   para títulos que no dicen "desarrollador" (`software`, `developer`, `data analyst`, `power bi`, `sql`, `qa`…).

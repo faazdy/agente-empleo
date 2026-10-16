@@ -155,7 +155,7 @@ class JobDatabase:
 
     @staticmethod
     def is_fresh(posted_str: Optional[str]) -> bool:
-        """Ventana vigente del radar (hoy, ayer y hace 2 días). Ver services/filters.MAX_AGE_DAYS."""
+        """Ventana vigente del radar (hasta 4 días). Ver services/filters.MAX_AGE_DAYS."""
         from services.filters import is_fresh
         return is_fresh(posted_str)
 
@@ -173,6 +173,8 @@ class JobDatabase:
             return float(m.group(1))
         if "ayer" in s:
             return 24.0
+        if s == "hoy" or s.startswith("hoy"):  # elempleo: solo dice "Hoy" (sin hora)
+            return 8.0
         m = re.search(r"hace\s+(\d+)\s+d[ií]a", s)
         if m:
             return float(m.group(1)) * 24.0
@@ -180,6 +182,9 @@ class JobDatabase:
         if m:
             diff = max(1, 23 - int(m.group(1)))
             return float(diff * 24.0)
+        m = re.search(r"hace\s+(\d+)\s+semana", s)
+        if m:
+            return float(m.group(1)) * 168.0
         if "agosto" in s or "m[aá]s de 30" in s or "mas de 30" in s:
             return 720.0
         return 72.0

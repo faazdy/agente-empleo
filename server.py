@@ -9,6 +9,7 @@ from core.database import JobDatabase
 from core.models import JobOffer
 from extractors.computrabajo import ComputrabajoExtractor
 from extractors.indeed import IndeedExtractor
+from extractors.elempleo import ElempleoExtractor
 from services.matcher import MatcherEngine
 from core.guard import WafBlocked, VerificationRequired, guard, in_alert_window, BOGOTA_TZ
 from core.database import STAGES
@@ -69,6 +70,7 @@ app.add_middleware(
 db = JobDatabase("data/jobs.db")
 extractor = ComputrabajoExtractor()
 indeed_extractor = IndeedExtractor()
+elempleo_extractor = ElempleoExtractor()
 matcher = MatcherEngine()
 
 
@@ -348,6 +350,28 @@ INDEED_TARGETS = [
 ]
 INDEED_ENABLED = True
 
+# elempleo.com (HTTP + API JSON del propio portal; sin navegador). Cada consulta trae hasta
+# 50 vacantes CON descripción por petición, ordenadas por fecha, y se corta al pasar la
+# ventana de ELEMPLEO_MAX_AGE_DAYS (4 días). "remote": True busca en todo el país y deja
+# solo las marcadas como remotas por el portal.
+ELEMPLEO_TARGETS = [
+    {"query": "desarrollador",          "max_pages": 3},
+    {"query": "programador",            "max_pages": 2},
+    {"query": "ingeniero de sistemas",  "max_pages": 2},
+    {"query": "software",               "max_pages": 2},
+    {"query": "full stack",             "max_pages": 1},
+    {"query": "python",                 "max_pages": 1},
+    {"query": "react",                  "max_pages": 1},
+    {"query": "analista de datos",      "max_pages": 2},
+    {"query": "ingeniero de datos",     "max_pages": 1},
+    {"query": "power bi",               "max_pages": 1},
+    {"query": "junior",                 "max_pages": 2},
+    {"query": "desarrollador",          "max_pages": 2, "remote": True},
+    {"query": "python",                 "max_pages": 1, "remote": True},
+    {"query": "analista de datos",      "max_pages": 1, "remote": True},
+]
+ELEMPLEO_ENABLED = True
+
 # Pausa extra ENTRE consultas (además de las pausas internas del extractor).
 INTER_QUERY_PAUSE = (6.0, 12.0)
 
@@ -375,20 +399,24 @@ def _store_offers(offers, existing_ids) -> int:
     return matched
 
 
-PORTALS = ("computrabajo", "indeed")
+PORTALS = ("computrabajo", "elempleo", "indeed")
+PORTAL_LABELS = {"computrabajo": "Computrabajo", "elempleo": "elempleo", "indeed": "Indeed"}
 
 
 async def _run_sync_worker(portals=PORTALS, interactive: bool = True):
-    """Escaneo: Computrabajo y/o Indeed (por defecto ambos). Siempre bajo el candado único."""
+    """Escaneo: Computrabajo, elempleo y/o Indeed (por defecto los tres). Siempre bajo el candado único."""
     do_ct = "computrabajo" in portals
+    do_ee = ELEMPLEO_ENABLED and "elempleo" in portals
     do_indeed = INDEED_ENABLED and "indeed" in portals
     global sync_state
     async with guard.lock:
         sync_state["is_running"] = True
         sync_state["new_offers"] = 0
         sync_state["total_scanned"] = 0
-        sync_state["total_queries"] = (len(SEARCH_TARGETS) if do_ct else 0) + (len(INDEED_TARGETS) if do_indeed else 0)
-        sync_state["portals"] = [p for p in PORTALS if (p == "computrabajo" and do_ct) or (p == "indeed" and do_indeed)]
+        sync_state["total_queries"] = ((len(SEARCH_TARGETS) if do_ct else 0) + (len(ELEMPLEO_TARGETS) if do_ee else 0)
+                                       + (len(INDEED_TARGETS) if do_indeed else 0))
+        enabled = {"computrabajo": do_ct, "elempleo": do_ee, "indeed": do_indeed}
+        sync_state["portals"] = [p for p in PORTALS if enabled[p]]
         sync_state["last_error"] = None
         sync_state["portal_errors"] = {}
         sync_state["note"] = ""
@@ -431,11 +459,44 @@ async def _run_sync_worker(portals=PORTALS, interactive: bool = True):
                 }
                 print(f"[SyncWorker] Computrabajo: {report['portales']['Computrabajo']}")
             _last_store.update(guardadas=0, descartadas_filtro=0)
+
+            # --- Fase 2: elempleo (HTTP + API JSON, sin navegador) ----------
+            if do_ee:
+                ee_base = len(SEARCH_TARGETS) if do_ct else 0
+                before_ee = new_count
+                elempleo_extractor.new_session()
+
+                def _ee_progress(i, t):
+                    sync_state["current_index"] = ee_base + i
+                    sync_state["current_query"] = f"[elempleo] {t['query']} ({'remoto' if t.get('remote') else 'Bogotá'})"
+
+                try:
+                    offers = await elempleo_extractor.search_many(
+                        ELEMPLEO_TARGETS, existing_ids, on_progress=_ee_progress, pause=INTER_QUERY_PAUSE)
+                    sync_state["total_scanned"] += len(offers)
+                    new_count += _store_offers(offers, existing_ids)
+                except WafBlocked as wb:
+                    new_count += _store_offers(wb.partial, existing_ids)
+                    sync_state["portal_errors"]["elempleo"] = str(wb)
+                    print(f"[SyncWorker] {wb}")
+                except Exception as e:
+                    traceback.print_exc()
+                    sync_state["portal_errors"]["elempleo"] = f"Error en elempleo: {describe_error(e)}"
+                if elempleo_extractor.used_fallback and "elempleo" not in sync_state["portal_errors"]:
+                    sync_state["note"] = ("elempleo: la API del portal no respondió; se leyó solo la primera página "
+                                          "de cada búsqueda (sin descripción completa).")
+                sync_state["new_offers"] = new_count
+                report["portales"]["elempleo"] = {
+                    **elempleo_extractor.stats, "compatibles": new_count - before_ee, **_last_store,
+                    "error": sync_state["portal_errors"].get("elempleo"),
+                }
+                print(f"[SyncWorker] elempleo: {report['portales']['elempleo']}")
+                _last_store.update(guardadas=0, descartadas_filtro=0)
             ct_matched = new_count
 
-            # --- Fase 2: Indeed (navegador real) ---------------------------
+            # --- Fase 3: Indeed (navegador real) ---------------------------
             if do_indeed:
-                base = len(SEARCH_TARGETS) if do_ct else 0
+                base = (len(SEARCH_TARGETS) if do_ct else 0) + (len(ELEMPLEO_TARGETS) if do_ee else 0)
 
                 def _progress(i, t):
                     sync_state["current_index"] = base + i
@@ -492,16 +553,16 @@ async def _run_sync_worker(portals=PORTALS, interactive: bool = True):
 
 
 @app.post("/api/sync")
-async def sync_offers(portal: str = Query("all", description="all | computrabajo | indeed")):
+async def sync_offers(portal: str = Query("all", description="all | computrabajo | elempleo | indeed")):
     portal = (portal or "all").lower()
     if portal not in ("all", *PORTALS):
-        raise HTTPException(status_code=400, detail="portal debe ser all, computrabajo o indeed")
+        raise HTTPException(status_code=400, detail="portal debe ser all, computrabajo, elempleo o indeed")
     selected = PORTALS if portal == "all" else (portal,)
     if sync_state.get("is_running") or guard.lock.locked():
         return {"success": True, "message": "Ya hay un escaneo en curso (sync o alerta). Se evita correr dos a la vez.", "running": True}
 
     asyncio.create_task(_run_sync_worker(selected))
-    names = " y ".join(p.capitalize() for p in selected)
+    names = ", ".join(PORTAL_LABELS.get(p, p) for p in selected)
     return {"success": True, "message": f"Sincronización de {names} iniciada en segundo plano", "running": True}
 
 
@@ -527,10 +588,10 @@ def get_log(lines: int = Query(80, ge=1, le=1000)):
 
 
 @app.post("/api/guard/clear")
-def clear_guard(portal: str = Query(..., description="computrabajo | indeed")):
+def clear_guard(portal: str = Query(..., description="computrabajo | elempleo | indeed")):
     """Levanta a mano una pausa de seguridad (úsalo solo si estás seguro de que el portal ya funciona en tu navegador)."""
     if portal.lower() not in PORTALS:
-        raise HTTPException(status_code=400, detail="portal debe ser computrabajo o indeed")
+        raise HTTPException(status_code=400, detail="portal debe ser computrabajo, elempleo o indeed")
     guard.clear(portal)
     return {"success": True}
 
@@ -638,6 +699,14 @@ ALERT_TARGETS = [
     {"query": "programador",             "location": "remoto",      "max_pages": 1},
 ]
 
+# elempleo en modo alerta: una sola sesión, página 1 (50 vacantes con descripción por consulta).
+ELEMPLEO_ALERT_TARGETS = [
+    {"query": "desarrollador",      "max_pages": 1},
+    {"query": "programador",        "max_pages": 1},
+    {"query": "analista de datos",  "max_pages": 1},
+    {"query": "desarrollador",      "max_pages": 1, "remote": True},
+]
+
 alert_state = {
     "is_running": False,
     "last_scan_at": None,
@@ -650,7 +719,7 @@ alert_state = {
 
 async def _run_alert_scan() -> int:
     """
-    Escaneo ligero (solo Computrabajo, página 1, hoy y ayer). Retorna nuevas vacantes compatibles.
+    Escaneo ligero (Computrabajo y elempleo, página 1). Retorna nuevas vacantes compatibles.
     Indeed no entra en el modo alerta para no abrir pestañas en el navegador cada 45 minutos.
     """
     if guard.lock.locked():
@@ -679,6 +748,19 @@ async def _run_alert_scan() -> int:
                 break  # corte global
             except Exception as e:
                 print(f"[AlertScanner] Error en '{target['query']}': {e}")
+        # elempleo: independiente de Computrabajo (un bloqueo allá no frena este portal)
+        if ELEMPLEO_ENABLED:
+            try:
+                elempleo_extractor.new_session()
+                offers = await elempleo_extractor.search_many(ELEMPLEO_ALERT_TARGETS, existing_ids,
+                                                              pause=INTER_QUERY_PAUSE)
+                new_count += _store_offers(offers, existing_ids)
+            except WafBlocked as wb:
+                new_count += _store_offers(wb.partial, existing_ids)
+                alert_state["last_error"] = str(wb)
+                print(f"[AlertScanner] {wb}")
+            except Exception as e:
+                print(f"[AlertScanner] Error en elempleo: {e}")
         return new_count
 
 
@@ -962,6 +1044,10 @@ def get_dashboard_html():
         <i class="fa-solid fa-magnifying-glass text-[#e11d48] mt-0.5"></i>
         <span><b class="text-[#0f172a]">Escanear solo Computrabajo</b><br><span class="text-[#64748b]">Sin abrir el navegador del radar.</span></span>
       </button>
+      <button onclick="syncJobs('elempleo'); closeMoreMenu()" class="w-full text-left px-3 py-2.5 rounded-lg hover:bg-[#f1f5f9] flex items-start gap-3">
+        <i class="fa-solid fa-magnifying-glass text-[#f59e0b] mt-0.5"></i>
+        <span><b class="text-[#0f172a]">Escanear solo elempleo</b><br><span class="text-[#64748b]">Últimos 4 días en elempleo.com. Rápido y sin abrir el navegador.</span></span>
+      </button>
       <button onclick="syncApplicationsFromPortal(); closeMoreMenu()" class="w-full text-left px-3 py-2.5 rounded-lg hover:bg-[#f1f5f9] flex items-start gap-3">
         <i class="fa-solid fa-rotate text-[#16a34a] mt-0.5"></i>
         <span><b class="text-[#0f172a]">Traer mis postulaciones</b><br><span class="text-[#64748b]">Lee "Mis postulaciones" de Computrabajo y las marca aquí.</span></span>
@@ -972,7 +1058,7 @@ def get_dashboard_html():
       </button>
       <button onclick="triggerAlertScan(); closeMoreMenu()" class="w-full text-left px-3 py-2.5 rounded-lg hover:bg-[#f1f5f9] flex items-start gap-3">
         <i class="fa-solid fa-bell text-[#e8a765] mt-0.5"></i>
-        <span><b class="text-[#0f172a]">Escaneo rápido</b><br><span class="text-[#64748b]">Solo lo publicado en Computrabajo, primera página.</span></span>
+        <span><b class="text-[#0f172a]">Escaneo rápido</b><br><span class="text-[#64748b]">Lo más reciente de Computrabajo y elempleo, primera página.</span></span>
       </button>
     </div>
 
@@ -1789,7 +1875,7 @@ def get_dashboard_html():
       if (!rep || !rep.portales) return '';
       const parts = Object.entries(rep.portales).map(([p, r]) => {
         if (r.error && !r.vistas) return `<b>${p}</b>: <span class="text-[#b45309]">${escapeHtml(r.error)}</span>`;
-        return `<b>${p}</b>: ${r.vistas || 0} revisadas · ${r.ya_conocidas || 0} ya conocidas · ${r.viejas || 0} de más de 2 días · ${r.titulo_no_afin || 0} no afines · <b>${r.compatibles || 0} nuevas compatibles</b>`;
+        return `<b>${p}</b>: ${r.vistas || 0} revisadas · ${r.ya_conocidas || 0} ya conocidas · ${r.viejas || 0} fuera de la ventana de días · ${r.titulo_no_afin || 0} no afines · <b>${r.compatibles || 0} nuevas compatibles</b>`;
       });
       return parts.join('<br>');
     }
