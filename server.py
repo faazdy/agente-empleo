@@ -13,7 +13,8 @@ from extractors.computrabajo import ComputrabajoExtractor
 from extractors.indeed import IndeedExtractor
 from extractors.elempleo import ElempleoExtractor
 from services.matcher import MatcherEngine
-from core.guard import WafBlocked, VerificationRequired, guard, in_alert_window, BOGOTA_TZ
+from services import filters as filters_mod
+from core.guard import WafBlocked, VerificationRequired, guard, in_active_window, BOGOTA_TZ
 from core.database import STAGES
 from core.isolated import run_isolated, describe_error
 import traceback
@@ -309,10 +310,14 @@ def list_profiles():
 
 @app.get("/api/profiles/defaults")
 def profile_defaults():
-    """Valores por defecto y las consultas que usa el radar cuando el perfil no tiene propias."""
+    """
+    Lo que trae el radar de fábrica: valores por defecto del formulario, las consultas que usa
+    cuando el perfil no tiene propias, y sus filtros en palabras (para poder verlos en la app).
+    """
     return {
         "profile": profile_store.DEFAULT_PROFILE,
-        "default_queries": sorted({t["query"] for t in SEARCH_TARGETS}),
+        "default_queries": sorted({t["query"] for t in (*SEARCH_TARGETS, *ELEMPLEO_TARGETS, *INDEED_TARGETS)}),
+        "builtin_rules": profile_store.describe_builtin_rules(),
     }
 
 
@@ -481,19 +486,48 @@ PORTALS = ("computrabajo", "elempleo", "indeed")
 PORTAL_LABELS = {"computrabajo": "Computrabajo", "elempleo": "elempleo", "indeed": "Indeed"}
 
 
-async def _run_sync_worker(portals=PORTALS, interactive: bool = True):
-    """Escaneo: Computrabajo, elempleo y/o Indeed (por defecto los tres). Siempre bajo el candado único."""
+def _portal_window(days: int, allowed) -> int:
+    """
+    Traduce los días que pidió la persona al filtro de fecha del portal: el valor permitido
+    más pequeño que los cubra (y si pide más que el tope del portal, su tope).
+    """
+    return next((v for v in allowed if v >= days), allowed[-1])
+
+
+# Valores que acepta cada portal en su filtro "publicado hace".
+CT_WINDOWS = (1, 3, 7, 15, 30)
+INDEED_WINDOWS = (1, 3, 7, 14)
+
+
+async def _run_sync_worker(portals=PORTALS, interactive: bool = True, quick: bool = False,
+                           days: Optional[int] = None):
+    """
+    Escaneo: Computrabajo, elempleo y/o Indeed (por defecto los tres).
+    quick=True recorta cada consulta a la primera página (pasada corta de novedades).
+    days sobreescribe, solo para este escaneo, los días hacia atrás del perfil.
+    Siempre bajo el candado único.
+    """
     profile = profile_store.get_active()
+    if days:
+        # Copia en memoria: no toca data/profiles.json, vale solo para este escaneo.
+        profile["max_age_days"] = max(1, min(30, int(days)))
     _refresh_matcher(profile)  # por si el perfil se editó desde otra pestaña
     custom = profile_store.search_targets(profile)
     ct_targets = custom["computrabajo"] if custom else SEARCH_TARGETS
     ee_targets = custom["elempleo"] if custom else ELEMPLEO_TARGETS
     indeed_targets = custom["indeed"] if custom else INDEED_TARGETS
+    if quick:
+        ct_targets = [{**t, "max_pages": 1} for t in ct_targets]
+        ee_targets = [{**t, "max_pages": 1} for t in ee_targets]
+        indeed_targets = [{**t, "max_pages": 1} for t in indeed_targets]
     allowed = profile.get("portals") or {}
     do_ct = "computrabajo" in portals and allowed.get("computrabajo", True) and bool(ct_targets)
     do_ee = ELEMPLEO_ENABLED and "elempleo" in portals and allowed.get("elempleo", True) and bool(ee_targets)
     do_indeed = INDEED_ENABLED and "indeed" in portals and allowed.get("indeed", True) and bool(indeed_targets)
-    elempleo_extractor.max_age_days = profile.get("max_age_days", elempleo_extractor.max_age_days)
+    ventana = profile.get("max_age_days") or filters_mod.MAX_AGE_DAYS
+    elempleo_extractor.max_age_days = ventana
+    indeed_extractor.fromage = _portal_window(ventana, INDEED_WINDOWS)
+    ct_pubdate = _portal_window(ventana, CT_WINDOWS)
     global sync_state
     async with guard.lock:
         sync_state["is_running"] = True
@@ -512,6 +546,7 @@ async def _run_sync_worker(portals=PORTALS, interactive: bool = True):
         extractor.new_session()  # una sola huella de navegador para todo el escaneo
         report = {"started_at": _dt.datetime.now(_dt.timezone.utc).isoformat(), "portales": {}}
         sync_state["profile"] = profile.get("name")
+        sync_state["max_age_days"] = ventana
         print(f"[SyncWorker] Inicio de escaneo ({profile.get('name')}): {', '.join(sync_state['portals'])}")
 
         try:
@@ -527,7 +562,7 @@ async def _run_sync_worker(portals=PORTALS, interactive: bool = True):
                         location=target["location"],
                         max_pages=target.get("max_pages", 1),
                         existing_ids=existing_ids,
-                        pubdate=7,  # semana completa (recortado a MAX_AGE_DAYS por el filtro) para cubrir fin de semana
+                        pubdate=ct_pubdate,  # ventana que filtra el portal; el radar la recorta después
                     )
                     sync_state["total_scanned"] += len(offers)
                     new_count += _store_offers(offers, existing_ids)
@@ -640,17 +675,30 @@ async def _run_sync_worker(portals=PORTALS, interactive: bool = True):
 
 
 @app.post("/api/sync")
-async def sync_offers(portal: str = Query("all", description="all | computrabajo | elempleo | indeed")):
+async def sync_offers(
+    portal: str = Query("all", description="all | computrabajo | elempleo | indeed"),
+    quick: bool = Query(False, description="Pasada corta: solo la primera página de cada consulta, sin Indeed"),
+    days: Optional[int] = Query(None, ge=1, le=30, description="Días hacia atrás solo para este escaneo (1 a 30)"),
+):
     portal = (portal or "all").lower()
     if portal not in ("all", *PORTALS):
         raise HTTPException(status_code=400, detail="portal debe ser all, computrabajo, elempleo o indeed")
     selected = PORTALS if portal == "all" else (portal,)
+    if quick:
+        # Indeed abre el navegador real: queda fuera de la pasada corta.
+        selected = tuple(p for p in selected if p != "indeed")
+        if not selected:
+            raise HTTPException(status_code=400, detail="La pasada corta no incluye Indeed porque abre el navegador.")
     if sync_state.get("is_running") or guard.lock.locked():
-        return {"success": True, "message": "Ya hay un escaneo en curso (sync o alerta). Se evita correr dos a la vez.", "running": True}
+        return {"success": True, "message": "Ya hay un escaneo en curso. Se evita correr dos a la vez.", "running": True}
 
-    asyncio.create_task(_run_sync_worker(selected))
+    asyncio.create_task(_run_sync_worker(selected, quick=quick, days=days))
     names = ", ".join(PORTAL_LABELS.get(p, p) for p in selected)
-    return {"success": True, "message": f"Sincronización de {names} iniciada en segundo plano", "running": True}
+    ventana = days or profile_store.get_active().get("max_age_days") or filters_mod.MAX_AGE_DAYS
+    return {"success": True,
+            "message": f"{'Pasada corta' if quick else 'Escaneo'} de {names} en marcha, "
+                       f"buscando {ventana} día{'s' if ventana != 1 else ''} hacia atrás",
+            "running": True}
 
 
 @app.get("/api/sync/status")
@@ -685,7 +733,7 @@ def clear_guard(portal: str = Query(..., description="computrabajo | elempleo | 
 
 @app.get("/api/guard/status")
 def get_guard_status():
-    """Estado anti-baneo: escaneo en curso, enfriamientos por portal y ventana horaria de alerta."""
+    """Estado anti-baneo: escaneo en curso, enfriamientos por portal y horario activo."""
     return guard.status()
 
 
@@ -723,7 +771,7 @@ def daily_sync_due(now: Optional[_dt.datetime] = None, state: Optional[dict] = N
     now = now or _dt.datetime.now(_dt.timezone.utc)
     state = _load_state() if state is None else state
     local = now.astimezone(BOGOTA_TZ)
-    if (local.hour, local.minute) < DAILY_SYNC_TIME or not in_alert_window(now):
+    if (local.hour, local.minute) < DAILY_SYNC_TIME or not in_active_window(now):
         return False
     last = state.get("last_full_sync_at")
     if not last:
@@ -757,175 +805,11 @@ def get_daily_status():
     return {**daily_state, "last_full_sync_at": st.get("last_full_sync_at"), "due_now": daily_sync_due(state=st)}
 
 
-# ---------------------------------------------------------------------------
-# ALERT SCANNER — Modo "Primero en Llegar" (cada 45 minutos, pubdate=1)
-# Solo rastrea página 1 de las consultas más activas buscando vacantes
-# publicadas en las ÚLTIMAS 24 HORAS. Ligero y anti-ban.
-# ---------------------------------------------------------------------------
-
-ALERT_INTERVAL_SECONDS = 45 * 60  # 45 minutos
-
-ALERT_TARGETS = [
-    # Desarrollo de software (Bogotá)
-    {"query": "desarrollador",           "location": "bogota-dc",  "max_pages": 1},
-    {"query": "desarrollador junior",    "location": "bogota-dc",  "max_pages": 1},
-    {"query": "desarrollador full stack","location": "bogota-dc",  "max_pages": 1},
-    {"query": "desarrollador backend",   "location": "bogota-dc",  "max_pages": 1},
-    {"query": "desarrollador frontend",  "location": "bogota-dc",  "max_pages": 1},
-    {"query": "desarrollador react",     "location": "bogota-dc",  "max_pages": 1},
-    {"query": "programador",             "location": "bogota-dc",  "max_pages": 1},
-    # Ingeniería y Calidad (Bogotá)
-    {"query": "ingeniero de sistemas",   "location": "bogota-dc",  "max_pages": 1},
-    {"query": "ingeniero de software",   "location": "bogota-dc",  "max_pages": 1},
-    {"query": "qa software",             "location": "bogota-dc",  "max_pages": 1},
-    # Datos y BI (Bogotá)
-    {"query": "analista de datos",       "location": "bogota-dc",  "max_pages": 1},
-    {"query": "analista bi",             "location": "bogota-dc",  "max_pages": 1},
-    # 100% Remoto / Teletrabajo Colombia
-    {"query": "desarrollador",           "location": "remoto",      "max_pages": 1},
-    {"query": "programador",             "location": "remoto",      "max_pages": 1},
-]
-
-# elempleo en modo alerta: una sola sesión, página 1 (50 vacantes con descripción por consulta).
-ELEMPLEO_ALERT_TARGETS = [
-    {"query": "desarrollador",      "max_pages": 1},
-    {"query": "programador",        "max_pages": 1},
-    {"query": "analista de datos",  "max_pages": 1},
-    {"query": "desarrollador",      "max_pages": 1, "remote": True},
-]
-
-alert_state = {
-    "is_running": False,
-    "last_scan_at": None,
-    "next_scan_at": None,
-    "last_new_count": 0,
-    "total_found_today": 0,
-    "last_error": None,
-}
-
-
-async def _run_alert_scan() -> int:
-    """
-    Escaneo ligero (Computrabajo y elempleo, página 1). Retorna nuevas vacantes compatibles.
-    Indeed no entra en el modo alerta para no abrir pestañas en el navegador cada 45 minutos.
-    """
-    if guard.lock.locked():
-        print("[AlertScanner] Hay otro escaneo en curso; se omite este ciclo.")
-        return 0
-    profile = profile_store.get_active()
-    _refresh_matcher(profile)
-    custom = profile_store.alert_targets(profile)
-    allowed = profile.get("portals") or {}
-    ct_alert = (custom["computrabajo"] if custom else ALERT_TARGETS) if allowed.get("computrabajo", True) else []
-    ee_alert = (custom["elempleo"] if custom else ELEMPLEO_ALERT_TARGETS) if allowed.get("elempleo", True) else []
-    async with guard.lock:
-        existing_ids = db.get_existing_ids()
-        new_count = 0
-        extractor.new_session()
-        for idx, target in enumerate(ct_alert):
-            if idx:
-                await asyncio.sleep(random.uniform(*INTER_QUERY_PAUSE))
-            try:
-                offers = await extractor.search_jobs(
-                    query=target["query"],
-                    location=target["location"],
-                    max_pages=1,
-                    existing_ids=existing_ids,
-                    pubdate=7,  # semana completa (recortado a MAX_AGE_DAYS por el filtro)
-                )
-                new_count += _store_offers(offers, existing_ids)
-            except WafBlocked as wb:
-                new_count += _store_offers(wb.partial, existing_ids)
-                alert_state["last_error"] = str(wb)
-                print(f"[AlertScanner] {wb}")
-                break  # corte global
-            except Exception as e:
-                print(f"[AlertScanner] Error en '{target['query']}': {e}")
-        # elempleo: independiente de Computrabajo (un bloqueo allá no frena este portal)
-        if ELEMPLEO_ENABLED and ee_alert:
-            try:
-                elempleo_extractor.new_session()
-                elempleo_extractor.max_age_days = profile.get("max_age_days", elempleo_extractor.max_age_days)
-                offers = await elempleo_extractor.search_many(ee_alert, existing_ids,
-                                                              pause=INTER_QUERY_PAUSE)
-                new_count += _store_offers(offers, existing_ids)
-            except WafBlocked as wb:
-                new_count += _store_offers(wb.partial, existing_ids)
-                alert_state["last_error"] = str(wb)
-                print(f"[AlertScanner] {wb}")
-            except Exception as e:
-                print(f"[AlertScanner] Error en elempleo: {e}")
-        return new_count
-
-
-async def _alert_loop():
-    """Bucle infinito que corre el escaneo de alerta cada ALERT_INTERVAL_SECONDS."""
-    await asyncio.sleep(5 * 60)  # espera 5 min antes del primer ciclo
-    while True:
-        now = _dt.datetime.now(_dt.timezone.utc)
-        alert_state["is_running"] = True
-        alert_state["last_scan_at"] = now.isoformat()
-        alert_state["last_error"] = None
-        print(f"[AlertScanner] Ciclo automático a las {now.strftime('%H:%M')} UTC")
-        if not in_alert_window(now):
-            alert_state["is_running"] = False
-            alert_state["last_error"] = "Fuera de horario (el modo alerta corre de 07:00 a 21:00, hora Bogotá)"
-            nxt = _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(seconds=ALERT_INTERVAL_SECONDS)
-            alert_state["next_scan_at"] = nxt.isoformat()
-            await asyncio.sleep(ALERT_INTERVAL_SECONDS)
-            continue
-        try:
-            found = await _run_alert_scan()
-            alert_state["last_new_count"] = found
-            alert_state["total_found_today"] = (alert_state.get("total_found_today") or 0) + found
-            print(f"[AlertScanner] {'✅ ' + str(found) + ' nuevas compatibles' if found else 'Sin novedades'}")
-        except Exception as e:
-            alert_state["last_error"] = str(e)
-            print(f"[AlertScanner] Error: {e}")
-        finally:
-            alert_state["is_running"] = False
-            nxt = _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(seconds=ALERT_INTERVAL_SECONDS)
-            alert_state["next_scan_at"] = nxt.isoformat()
-        await asyncio.sleep(ALERT_INTERVAL_SECONDS)
-
-
 @app.on_event("startup")
-async def start_alert_loop():
-    nxt = _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(seconds=5 * 60)
-    alert_state["next_scan_at"] = nxt.isoformat()
-    asyncio.create_task(_alert_loop())
+async def start_background_jobs():
+    """Única tarea de fondo: la sincronización diaria completa (07:30 hora Bogotá)."""
     asyncio.create_task(_daily_loop())
-    print("[AlertScanner] 🔔 Sistema de alerta activado. Primer scan en 5 min.")
-
-
-@app.get("/api/alert/status")
-def get_alert_status():
-    return alert_state
-
-
-@app.post("/api/alert/scan-now")
-async def alert_scan_now():
-    """Fuerza un escaneo de alerta inmediato."""
-    if alert_state.get("is_running") or guard.lock.locked():
-        return {"success": False, "message": "Ya hay un escaneo en curso (sync o alerta)"}
-
-    async def _immediate():
-        alert_state["is_running"] = True
-        alert_state["last_error"] = None
-        try:
-            found = await _run_alert_scan()
-            alert_state["last_new_count"] = found
-            alert_state["total_found_today"] = (alert_state.get("total_found_today") or 0) + found
-            alert_state["last_scan_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
-        except Exception as e:
-            alert_state["last_error"] = str(e)
-        finally:
-            alert_state["is_running"] = False
-            nxt = _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(seconds=ALERT_INTERVAL_SECONDS)
-            alert_state["next_scan_at"] = nxt.isoformat()
-
-    asyncio.create_task(_immediate())
-    return {"success": True, "message": "Escaneo de alerta iniciado"}
+    print(f"[DailySync] Sincronización diaria activada ({daily_state['time']} hora Bogotá).")
 
 
 STATIC_DIR = _Path(__file__).resolve().parent / "static"

@@ -1,11 +1,12 @@
 """
 Guardián anti-baneo compartido por todos los extractores.
 
-- Candado único: nunca corren dos escaneos a la vez (sync manual y modo alerta).
+- Candado único: nunca corren dos escaneos a la vez (manual y automático).
 - Corte global: un 403/429 en cualquier consulta detiene TODO el escaneo de ese portal.
 - Enfriamiento persistente: el bloqueo se guarda en data/cooldown.json y sobrevive
   a reinicios del servidor, para no volver a golpear el portal apenas se levanta.
-- Ventana horaria del modo alerta (hora de Bogotá, UTC-5 fijo: Colombia no tiene horario de verano).
+- Horario activo para los escaneos automáticos (hora de Bogotá, UTC-5 fijo:
+  Colombia no tiene horario de verano).
 """
 import asyncio
 import json
@@ -15,7 +16,7 @@ from typing import List, Optional
 
 BOGOTA_TZ = timezone(timedelta(hours=-5))
 COOLDOWN_HOURS = 2.0
-ALERT_WINDOW = (7, 21)  # 07:00 a 21:00 hora de Bogotá
+ACTIVE_WINDOW = (7, 21)  # los escaneos automáticos solo corren de 07:00 a 21:00 hora de Bogotá
 
 
 class WafBlocked(Exception):
@@ -121,13 +122,14 @@ class ScrapeGuard:
                 "reason": entry.get("reason"),
             }
         return {"scan_running": self.lock.locked(), "portals": out,
-                "alert_window_open": in_alert_window()}
+                "active_window_open": in_active_window()}
 
 
-def in_alert_window(now: Optional[datetime] = None) -> bool:
+def in_active_window(now: Optional[datetime] = None) -> bool:
+    """True si estamos en el horario en que corren los escaneos automáticos."""
     now = now or datetime.now(timezone.utc)
     hour = now.astimezone(BOGOTA_TZ).hour
-    return ALERT_WINDOW[0] <= hour < ALERT_WINDOW[1]
+    return ACTIVE_WINDOW[0] <= hour < ACTIVE_WINDOW[1]
 
 
 guard = ScrapeGuard()

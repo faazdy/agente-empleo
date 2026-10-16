@@ -111,3 +111,43 @@ async def test_profile_api_and_reevaluate(tmp_path, monkeypatch):
         matched = (await c.get("/api/offers?status=matched")).json()
         assert [o["title"] for o in matched] == ["Desarrollador Python"]
         assert (await c.delete("/api/profiles/default")).status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Los filtros del radar deben poder verse desde la app (si no, el perfil por
+# defecto parece vacío cuando en realidad trae cientos de reglas).
+# ---------------------------------------------------------------------------
+
+def test_humanize_pattern_reads_like_words():
+    casos = {
+        r"\bvendedor(?:es|as?)?\b": "vendedor",
+        r"\bpr[aá]cticas?\b": "practicas",
+        r"back[\s-]end": "back-end",
+        r"administrador(?:/a|\(a\)|a)?\s+de\s+sistemas\b": "administrador de sistemas",
+        r"\b(?:ingenier[oa]|ing)[.,]?\s*(?:.*?\s+)?(?:de\s+|en\s+)?sistemas?": "ingeniero / ing … de / en sistemas",
+    }
+    for patron, esperado in casos.items():
+        assert profiles.humanize_pattern(patron) == esperado, patron
+
+
+def test_builtin_rules_are_described_without_regex_leftovers():
+    r = profiles.describe_builtin_rules()
+    for clave in ("roles", "exclude", "skills", "skills_plus", "senior"):
+        assert r[clave], f"{clave} no debería venir vacío"
+        for palabra in r[clave]:
+            assert not set(palabra) & set("[]\\*?^$|()"), f"{clave}: '{palabra}' trae restos de regex"
+    assert "desarrollad" in r["roles"] and "ventas" in r["exclude"] and "python" in r["skills"]
+    assert r["max_years_experience"] == filters.MAX_YEARS_EXPERIENCE
+    assert r["max_age_days"] == filters.MAX_AGE_DAYS
+
+
+@pytest.mark.anyio
+async def test_defaults_endpoint_exposes_queries_and_rules():
+    import httpx
+    import server
+    transport = httpx.ASGITransport(app=server.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+        d = (await c.get("/api/profiles/defaults")).json()
+    assert len(d["default_queries"]) > 15, "deben verse las consultas de los tres portales"
+    assert "desarrollador" in d["default_queries"]
+    assert d["builtin_rules"]["roles"] and d["builtin_rules"]["exclude"]

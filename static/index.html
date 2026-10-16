@@ -5,281 +5,393 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
   <title>Radar de Empleo</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
-  <style>
-    .desc { white-space: pre-wrap; max-height: 50vh; overflow: auto; }
-    td.wrap { min-width: 14rem; }
-    #log { font-size: .75rem; max-height: 40vh; overflow: auto; }
-  </style>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+  <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
 
-<nav class="navbar navbar-dark bg-dark">
-  <div class="container-fluid gap-2">
-    <span class="navbar-brand mb-0">Radar de Empleo</span>
-    <div class="d-flex flex-wrap gap-2 align-items-center">
-      <label class="text-light small" for="activeProfile">Perfil:</label>
-      <select id="activeProfile" class="form-select form-select-sm w-auto"></select>
+<header class="masthead">
+  <h1 class="wordmark">Radar <span class="dim">de</span> Empleo</h1>
+  <a class="byline" href="https://miguxld.site" target="_blank" rel="noreferrer noopener">by miguxld</a>
+</header>
+
+<div class="toolbar">
+  <div class="toolbar-inner">
+    <nav class="tabs" role="tablist" aria-label="Secciones">
+      <button class="tab-btn active" data-bs-toggle="tab" data-bs-target="#tab-offers" type="button" role="tab">
+        <i class="bi bi-broadcast-pin"></i>Vacantes</button>
+      <button class="tab-btn" data-bs-toggle="tab" data-bs-target="#tab-applied" type="button" role="tab" onclick="loadTracking()">
+        <i class="bi bi-send-check"></i>Postuladas</button>
+      <button class="tab-btn" data-bs-toggle="tab" data-bs-target="#tab-profiles" type="button" role="tab" onclick="renderProfileList()">
+        <i class="bi bi-person-gear"></i>Perfiles</button>
+      <button class="tab-btn" data-bs-toggle="tab" data-bs-target="#tab-tools" type="button" role="tab" onclick="loadTools()">
+        <i class="bi bi-sliders2"></i>Herramientas</button>
+    </nav>
+
+    <div class="toolbar-right">
+      <select id="activeProfile" class="form-select form-select-sm w-auto" aria-label="Perfil activo"></select>
       <div class="btn-group btn-group-sm">
-        <button class="btn btn-primary" onclick="scan('all')">Escanear</button>
-        <button class="btn btn-primary dropdown-toggle dropdown-toggle-split" data-bs-toggle="dropdown" aria-label="Más opciones de escaneo"></button>
+        <button class="btn btn-primary" onclick="scan('all')" data-bs-toggle="tooltip" data-bs-title="Recorre los tres portales">
+          <i class="bi bi-radar me-1"></i>Escanear</button>
+        <button class="btn btn-primary dropdown-toggle dropdown-toggle-split" data-bs-toggle="dropdown"
+                data-bs-auto-close="outside" aria-label="Ajustes del escaneo"></button>
         <ul class="dropdown-menu dropdown-menu-end">
+          <li class="scan-days">
+            <label class="form-label small mb-1" for="scanDays">Buscar hasta <b class="num" id="scanDaysOut">4 días</b> hacia atrás</label>
+            <input type="range" class="form-range" id="scanDays" min="1" max="30" step="1" value="4" oninput="showScanDays()">
+            <div class="form-text" id="scanDaysNote"></div>
+          </li>
+          <li><hr class="dropdown-divider"></li>
+          <li><button class="dropdown-item" onclick="scan('all', true)"><i class="bi bi-lightning-charge me-2"></i>Pasada corta (primera página)</button></li>
+          <li><hr class="dropdown-divider"></li>
           <li><button class="dropdown-item" onclick="scan('computrabajo')">Solo Computrabajo</button></li>
           <li><button class="dropdown-item" onclick="scan('elempleo')">Solo elempleo</button></li>
           <li><button class="dropdown-item" onclick="scan('indeed')">Solo Indeed</button></li>
-          <li><hr class="dropdown-divider"></li>
-          <li><button class="dropdown-item" onclick="quickScan()">Escaneo rápido (página 1)</button></li>
         </ul>
       </div>
     </div>
   </div>
-</nav>
+</div>
 
-<div class="container-fluid py-3">
-  <div id="syncInfo" class="alert alert-secondary py-2 small d-none"></div>
-  <div id="msg"></div>
-
-  <ul class="nav nav-tabs mb-3">
-    <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-offers">Vacantes</button></li>
-    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-applied" onclick="loadTracking()">Postuladas</button></li>
-    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-profiles" onclick="renderProfileList()">Perfiles</button></li>
-    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-tools" onclick="loadTools()">Herramientas</button></li>
-  </ul>
+<div class="shell">
+  <div id="scanbar"></div>
 
   <div class="tab-content">
 
-    <!-- ================= VACANTES ================= -->
-    <div class="tab-pane fade show active" id="tab-offers">
-      <form class="row g-2 mb-2" onsubmit="event.preventDefault()">
-        <div class="col-6 col-md-2">
-          <label class="form-label small mb-0">Estado</label>
-          <select id="fStatus" class="form-select form-select-sm" onchange="loadOffers()">
-            <option value="matched">Compatibles</option>
-            <option value="favorite">Guardadas</option>
-            <option value="applied">Postuladas</option>
-            <option value="discarded">Descartadas</option>
-            <option value="all">Todas</option>
-          </select>
-        </div>
-        <div class="col-6 col-md-3">
-          <label class="form-label small mb-0">Buscar (cargo, empresa, tecnología)</label>
-          <input id="fText" class="form-control form-control-sm" oninput="renderOffers()">
-        </div>
-        <div class="col-6 col-md-1">
-          <label class="form-label small mb-0">Portal</label>
-          <select id="fPortal" class="form-select form-select-sm" onchange="renderOffers()">
-            <option value="">Todos</option>
-            <option>Computrabajo</option><option>elempleo</option><option>Indeed</option>
-          </select>
-        </div>
-        <div class="col-6 col-md-1">
-          <label class="form-label small mb-0">Modalidad</label>
-          <select id="fModality" class="form-select form-select-sm" onchange="renderOffers()">
-            <option value="">Todas</option>
-            <option value="remoto">Remoto</option><option value="híbrido">Híbrido</option><option value="presencial">Presencial</option>
-          </select>
-        </div>
-        <div class="col-4 col-md-1">
-          <label class="form-label small mb-0">Puntaje mín.</label>
-          <input id="fMinScore" type="number" min="0" max="100" class="form-control form-control-sm" oninput="renderOffers()">
-        </div>
-        <div class="col-4 col-md-1">
-          <label class="form-label small mb-0">Excluir palabra</label>
-          <input id="fExclude" class="form-control form-control-sm" placeholder="ej: java" oninput="renderOffers()">
-        </div>
-        <div class="col-4 col-md-2">
-          <label class="form-label small mb-0">Orden</label>
-          <select id="fSort" class="form-select form-select-sm" onchange="loadOffers()">
-            <option value="smart">Afinidad + frescura</option>
-            <option value="recent">Más recientes</option>
-            <option value="score">Mayor puntaje</option>
-          </select>
-        </div>
-        <div class="col-12 col-md-1 d-flex align-items-end">
-          <button class="btn btn-sm btn-outline-secondary w-100" onclick="clearFilters()">Limpiar</button>
-        </div>
-      </form>
-      <p class="small text-muted mb-2"><span id="count">0</span> vacantes · <span id="stats"></span></p>
-      <div class="table-responsive">
-        <table class="table table-sm table-hover align-middle">
-          <thead><tr><th>%</th><th>Cargo</th><th>Empresa</th><th>Portal</th><th>Ubicación</th><th>Publicada</th><th></th></tr></thead>
-          <tbody id="offersBody"></tbody>
-        </table>
+    <!-- ===================== VACANTES ===================== -->
+    <div class="tab-pane fade show active" id="tab-offers" role="tabpanel">
+      <div class="seg" id="statusSeg" role="group" aria-label="Estado de las vacantes">
+        <button class="seg-btn" type="button" data-status="matched" aria-pressed="true" onclick="pickStatus('matched')">
+          <i class="bi bi-bullseye"></i>Compatibles<span class="seg-count" id="cnt-matched">0</span></button>
+        <button class="seg-btn" type="button" data-status="favorite" aria-pressed="false" onclick="pickStatus('favorite')">
+          <i class="bi bi-bookmark"></i>Guardadas<span class="seg-count" id="cnt-favorite">0</span></button>
+        <button class="seg-btn" type="button" data-status="applied" aria-pressed="false" onclick="pickStatus('applied')">
+          <i class="bi bi-send-check"></i>Postuladas<span class="seg-count" id="cnt-applied">0</span></button>
+        <button class="seg-btn" type="button" data-status="discarded" aria-pressed="false" onclick="pickStatus('discarded')">
+          <i class="bi bi-x-circle"></i>Descartadas<span class="seg-count" id="cnt-discarded">0</span></button>
+        <button class="seg-btn" type="button" data-status="all" aria-pressed="false" onclick="pickStatus('all')">
+          <i class="bi bi-list-ul"></i>Todas<span class="seg-count" id="cnt-total">0</span></button>
       </div>
-    </div>
 
-    <!-- ================= POSTULADAS ================= -->
-    <div class="tab-pane fade" id="tab-applied">
-      <p id="trackingSummary" class="small"></p>
-      <div class="table-responsive">
-        <table class="table table-sm align-middle">
-          <thead><tr><th>Cargo</th><th>Empresa</th><th>Portal</th><th>Postulé</th><th>Etapa</th><th>Notas</th></tr></thead>
-          <tbody id="trackingBody"></tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- ================= PERFILES ================= -->
-    <div class="tab-pane fade" id="tab-profiles">
-      <div class="row g-3">
-        <div class="col-md-3">
-          <div class="list-group mb-2" id="profileList"></div>
-          <button class="btn btn-sm btn-outline-primary w-100" onclick="newProfile()">+ Nuevo perfil</button>
+      <div class="searchline">
+        <div class="search-wrap">
+          <i class="bi bi-search"></i>
+          <input id="fText" class="form-control" placeholder="Buscar por cargo, empresa o tecnología" oninput="renderOffers()">
         </div>
-        <div class="col-md-9">
-          <form id="profileForm" onsubmit="event.preventDefault(); saveProfile(false)">
-            <input type="hidden" name="id">
-            <div class="mb-2">
-              <label class="form-label">Nombre del perfil</label>
-              <input name="name" class="form-control" required maxlength="60">
-            </div>
-
-            <h6 class="mt-3">Qué buscar</h6>
-            <div class="form-check">
-              <input class="form-check-input" type="checkbox" name="use_default_queries" id="pDefQ" onchange="toggleQueries()">
-              <label class="form-check-label" for="pDefQ">Usar las consultas del radar (desarrollador, programador, datos…)</label>
-            </div>
-            <div class="mb-2" id="queriesBox">
-              <label class="form-label small mb-0">Consultas propias (una por línea)</label>
-              <textarea name="queries" rows="4" class="form-control" placeholder="desarrollador python&#10;analista de datos"></textarea>
-            </div>
-            <div class="row g-2">
-              <div class="col-md-3">
-                <label class="form-label small mb-0">Ciudad</label>
-                <input name="city" class="form-control form-control-sm">
-                <div class="form-text">elempleo solo filtra Bogotá; con otra ciudad allí busca solo remoto.</div>
-              </div>
-              <div class="col-md-3">
-                <label class="form-label small mb-0">Ubicación</label>
-                <select name="location_mode" class="form-select form-select-sm">
-                  <option value="ambas">Ciudad + remoto</option>
-                  <option value="ciudad">Solo ciudad</option>
-                  <option value="remoto">Solo remoto</option>
-                </select>
-              </div>
-              <div class="col-md-2">
-                <label class="form-label small mb-0">Páginas por consulta</label>
-                <input name="max_pages" type="number" min="1" max="6" class="form-control form-control-sm">
-              </div>
-              <div class="col-md-2">
-                <label class="form-label small mb-0">Días hacia atrás</label>
-                <input name="max_age_days" type="number" min="1" max="30" class="form-control form-control-sm">
-              </div>
-              <div class="col-md-2">
-                <label class="form-label small mb-0 d-block">Portales</label>
-                <div class="form-check form-check-inline"><input class="form-check-input" type="checkbox" name="portal_computrabajo" id="pCt"><label class="form-check-label small" for="pCt">Computrabajo</label></div>
-                <div class="form-check form-check-inline"><input class="form-check-input" type="checkbox" name="portal_elempleo" id="pEe"><label class="form-check-label small" for="pEe">elempleo</label></div>
-                <div class="form-check form-check-inline"><input class="form-check-input" type="checkbox" name="portal_indeed" id="pIn"><label class="form-check-label small" for="pIn">Indeed</label></div>
-              </div>
-            </div>
-
-            <h6 class="mt-3">Cómo filtrar</h6>
-            <div class="form-check">
-              <input class="form-check-input" type="checkbox" name="use_builtin_rules" id="pBuiltin">
-              <label class="form-check-label" for="pBuiltin">Partir de las reglas del radar (perfil Jr de desarrollo/datos) y sumar lo de abajo</label>
-              <div class="form-text">Desmarcado: solo cuentan las listas de abajo. Si las dejas vacías, no se filtra por cargo.</div>
-            </div>
-            <div class="row g-2">
-              <div class="col-md-6">
-                <label class="form-label small mb-0">Cargos afines (palabras en el título, separadas por coma)</label>
-                <textarea name="roles" rows="2" class="form-control form-control-sm" placeholder="desarrollador, analista de datos, qa"></textarea>
-              </div>
-              <div class="col-md-6">
-                <label class="form-label small mb-0">Descartar si el título dice</label>
-                <textarea name="exclude" rows="2" class="form-control form-control-sm" placeholder="ventas, call center, practicante"></textarea>
-              </div>
-              <div class="col-md-6">
-                <label class="form-label small mb-0">Tecnologías principales (+12 c/u)</label>
-                <textarea name="skills" rows="2" class="form-control form-control-sm" placeholder="python, sql, react"></textarea>
-              </div>
-              <div class="col-md-6">
-                <label class="form-label small mb-0">Tecnologías secundarias (+5 c/u)</label>
-                <textarea name="skills_plus" rows="2" class="form-control form-control-sm" placeholder="docker, aws"></textarea>
-              </div>
-              <div class="col-md-3">
-                <label class="form-label small mb-0">Máx. años de experiencia</label>
-                <input name="max_years_experience" type="number" min="0" max="15" class="form-control form-control-sm">
-              </div>
-              <div class="col-md-3">
-                <label class="form-label small mb-0">Puntaje mínimo para "compatible"</label>
-                <input name="min_score" type="number" min="0" max="100" class="form-control form-control-sm">
-              </div>
-              <div class="col-md-6 d-flex align-items-end">
-                <div class="form-check">
-                  <input class="form-check-input" type="checkbox" name="exclude_senior" id="pSenior">
-                  <label class="form-check-label" for="pSenior">Descartar cargos Senior / Líder / Jefe</label>
-                </div>
-              </div>
-            </div>
-
-            <div class="d-flex flex-wrap gap-2 mt-3">
-              <button type="submit" class="btn btn-primary btn-sm">Guardar</button>
-              <button type="button" class="btn btn-success btn-sm" onclick="saveProfile(true)">Guardar y activar</button>
-              <button type="button" class="btn btn-outline-secondary btn-sm" onclick="duplicateProfile()">Duplicar</button>
-              <button type="button" class="btn btn-outline-danger btn-sm" id="btnDeleteProfile" onclick="deleteProfile()">Borrar</button>
-            </div>
-            <p class="form-text">Al activar un perfil se vuelven a puntuar las vacantes guardadas en la base (no cambia las que marcaste como postuladas o guardadas). El próximo escaneo usa sus consultas.</p>
-          </form>
-        </div>
+        <button class="btn btn-outline-secondary" data-bs-toggle="collapse" data-bs-target="#filters" aria-expanded="false">
+          <i class="bi bi-funnel"></i><span class="d-none d-sm-inline ms-1">Filtros</span>
+        </button>
       </div>
-    </div>
 
-    <!-- ================= HERRAMIENTAS ================= -->
-    <div class="tab-pane fade" id="tab-tools">
-      <div class="row g-3">
-        <div class="col-md-6">
-          <h6>Navegador y portales</h6>
-          <div class="d-flex flex-wrap gap-2 mb-2">
-            <button class="btn btn-sm btn-outline-secondary" onclick="openBrowser()">Abrir navegador del radar</button>
-            <button class="btn btn-sm btn-outline-secondary" onclick="syncApplications()">Traer mis postulaciones (Computrabajo)</button>
-            <button class="btn btn-sm btn-outline-secondary" onclick="reevaluate()">Reevaluar vacantes con el perfil activo</button>
+      <div class="collapse" id="filters">
+        <div class="filters">
+          <div class="row g-2">
+            <div class="col-6 col-md-2">
+              <label class="form-label small" for="fPortal">Portal</label>
+              <select id="fPortal" class="form-select form-select-sm" onchange="renderOffers()">
+                <option value="">Todos</option>
+                <option>Computrabajo</option><option>elempleo</option><option>Indeed</option>
+              </select>
+            </div>
+            <div class="col-6 col-md-2">
+              <label class="form-label small" for="fModality">Modalidad</label>
+              <select id="fModality" class="form-select form-select-sm" onchange="renderOffers()">
+                <option value="">Todas</option>
+                <option value="remoto">Remoto</option><option value="híbrido">Híbrido</option><option value="presencial">Presencial</option>
+              </select>
+            </div>
+            <div class="col-6 col-md-2">
+              <label class="form-label small" for="fMinScore">Puntaje mínimo</label>
+              <input id="fMinScore" type="number" min="0" max="100" class="form-control form-control-sm" oninput="renderOffers()">
+            </div>
+            <div class="col-6 col-md-3">
+              <label class="form-label small" for="fExclude">Esconder si el cargo dice</label>
+              <input id="fExclude" class="form-control form-control-sm" placeholder="java, sap" oninput="renderOffers()">
+            </div>
+            <div class="col-6 col-md-2">
+              <label class="form-label small" for="fSort">Orden</label>
+              <select id="fSort" class="form-select form-select-sm" onchange="loadOffers()">
+                <option value="smart">Afinidad y frescura</option>
+                <option value="recent">Más recientes</option>
+                <option value="score">Mayor puntaje</option>
+              </select>
+            </div>
+            <div class="col-6 col-md-1 d-flex align-items-end">
+              <button class="btn btn-sm btn-outline-secondary w-100" onclick="clearFilters()">Limpiar</button>
+            </div>
           </div>
-          <h6 class="mt-3">Estado</h6>
-          <ul id="guardStatus" class="small"></ul>
         </div>
-        <div class="col-md-6">
-          <h6>Respuestas ATS</h6>
-          <input id="qaInput" class="form-control form-control-sm mb-2" placeholder="Pega la pregunta de la postulación" oninput="qaSearch()">
-          <div id="qaList" class="small"></div>
+      </div>
+
+      <p class="result-line" id="resultLine"></p>
+      <div class="list" id="offersList"></div>
+    </div>
+
+    <!-- ===================== POSTULADAS ===================== -->
+    <div class="tab-pane fade" id="tab-applied" role="tabpanel">
+      <div class="statline mb-3" id="trackingStats"></div>
+      <div class="panel">
+        <div class="panel-head"><h2><i class="bi bi-send-check"></i>Mis postulaciones</h2></div>
+        <div class="table-responsive">
+          <table class="table align-middle">
+            <thead><tr><th>Cargo</th><th>Empresa</th><th>Portal</th><th>Me postulé</th><th>Etapa</th><th>Notas</th></tr></thead>
+            <tbody id="trackingBody"></tbody>
+          </table>
         </div>
-        <div class="col-md-6">
-          <h6>Qué aprender</h6>
-          <select id="skillsScope" class="form-select form-select-sm w-auto mb-2" onchange="loadSkills()">
-            <option value="relevant">Compatibles + guardadas + postuladas</option>
-            <option value="applied">Solo postuladas</option>
-            <option value="all">Todas</option>
-          </select>
-          <table class="table table-sm small"><thead><tr><th>Tecnología</th><th>Vacantes</th><th>%</th><th>¿La tengo?</th></tr></thead><tbody id="skillsBody"></tbody></table>
+      </div>
+    </div>
+
+    <!-- ===================== PERFILES ===================== -->
+    <div class="tab-pane fade" id="tab-profiles" role="tabpanel">
+      <p class="notice mb-3">
+        El perfil activo decide <b>qué busca</b> el radar y <b>qué considera compatible</b>.
+        <b>Miguel (por defecto)</b> trae las palabras clave y los filtros con los que nació la app.
+        Para otra persona u otro tipo de búsqueda, crea un perfil nuevo: empieza en blanco y se configura
+        desde esta misma pantalla, sin tocar código.
+      </p>
+      <div class="row g-3">
+        <div class="col-lg-4 col-xl-3">
+          <div class="panel">
+            <div class="panel-head"><h2><i class="bi bi-person-lines-fill"></i>Perfiles</h2></div>
+            <div id="profileList"></div>
+          </div>
+          <div class="d-grid gap-2 mt-2">
+            <button class="btn btn-sm btn-primary" onclick="newProfile()"><i class="bi bi-plus-lg me-1"></i>Crear perfil en blanco</button>
+            <button class="btn btn-sm btn-outline-secondary" onclick="duplicateProfile()"><i class="bi bi-copy me-1"></i>Duplicar el que estoy viendo</button>
+          </div>
         </div>
-        <div class="col-md-6">
-          <h6>Registro <button class="btn btn-link btn-sm p-0" onclick="loadLog()">actualizar</button></h6>
-          <pre id="log" class="bg-light border p-2"></pre>
+
+        <div class="col-lg-8 col-xl-9">
+          <div class="panel">
+            <div class="panel-head">
+              <h2><i class="bi bi-pencil-square"></i><span id="profileFormTitle">Editar perfil</span></h2>
+              <span class="tag" id="profileFormTag"></span>
+            </div>
+            <div class="panel-body">
+              <form id="profileForm" onsubmit="event.preventDefault(); saveProfile(false)">
+                <input type="hidden" name="id">
+                <div class="mb-3">
+                  <label class="form-label" for="pName">Nombre del perfil</label>
+                  <input id="pName" name="name" class="form-control" required maxlength="60" placeholder="Por ejemplo: Diseño gráfico Medellín">
+                </div>
+
+                <fieldset class="block">
+                  <legend>Qué buscar</legend>
+                  <div class="form-check mb-2">
+                    <input class="form-check-input" type="checkbox" name="use_default_queries" id="pDefQ" onchange="toggleQueries()">
+                    <label class="form-check-label" for="pDefQ">Usar las consultas con las que nació el radar</label>
+                    <div class="form-text">Desmárcalo para escribir las tuyas.</div>
+                  </div>
+                  <div id="builtinQueriesBox" class="mb-3">
+                    <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#builtinQueries">
+                      <i class="bi bi-eye me-1"></i>Ver las <span id="bqCount">0</span> consultas que usa
+                    </button>
+                    <div class="collapse mt-2" id="builtinQueries">
+                      <div class="filters"><div class="chips" id="bqList"></div></div>
+                    </div>
+                  </div>
+                  <div class="mb-3" id="queriesBox">
+                    <label class="form-label" for="pQueries">Mis consultas <span class="text-body-secondary fw-normal">(una por línea)</span></label>
+                    <textarea id="pQueries" name="queries" rows="4" class="form-control" placeholder="diseñador gráfico&#10;community manager&#10;ilustrador"></textarea>
+                    <div class="form-text">Son las búsquedas que el radar escribe en cada portal.</div>
+                  </div>
+                  <div class="row g-3">
+                    <div class="col-md-4">
+                      <label class="form-label" for="pCity">Ciudad</label>
+                      <input id="pCity" name="city" class="form-control form-control-sm">
+                      <div class="form-text">elempleo solo filtra por Bogotá: con otra ciudad, allí se busca únicamente remoto.</div>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label" for="pLoc">Dónde</label>
+                      <select id="pLoc" name="location_mode" class="form-select form-select-sm">
+                        <option value="ambas">En la ciudad y remoto</option>
+                        <option value="ciudad">Solo en la ciudad</option>
+                        <option value="remoto">Solo remoto</option>
+                      </select>
+                    </div>
+                    <div class="col-6 col-md-2">
+                      <label class="form-label" for="pPages">Páginas</label>
+                      <input id="pPages" name="max_pages" type="number" min="1" max="6" class="form-control form-control-sm">
+                    </div>
+                    <div class="col-6 col-md-2">
+                      <label class="form-label" for="pDays">Días hacia atrás</label>
+                      <input id="pDays" name="max_age_days" type="number" min="1" max="30" class="form-control form-control-sm">
+                    </div>
+                    <div class="col-12">
+                      <label class="form-label d-block">Portales</label>
+                      <div class="form-check form-check-inline"><input class="form-check-input" type="checkbox" name="portal_computrabajo" id="pCt"><label class="form-check-label" for="pCt">Computrabajo</label></div>
+                      <div class="form-check form-check-inline"><input class="form-check-input" type="checkbox" name="portal_elempleo" id="pEe"><label class="form-check-label" for="pEe">elempleo</label></div>
+                      <div class="form-check form-check-inline"><input class="form-check-input" type="checkbox" name="portal_indeed" id="pIn"><label class="form-check-label" for="pIn">Indeed</label></div>
+                    </div>
+                  </div>
+                </fieldset>
+
+                <fieldset class="block">
+                  <legend>Cómo filtrar</legend>
+                  <div class="form-check mb-2">
+                    <input class="form-check-input" type="checkbox" name="use_builtin_rules" id="pBuiltin" onchange="toggleBuiltin()">
+                    <label class="form-check-label" for="pBuiltin">Partir de los filtros originales del radar y sumarles lo de abajo</label>
+                    <div class="form-text">Desmárcalo y solo valdrá lo que escribas aquí abajo; si lo dejas todo vacío, no se filtra por cargo y entra todo lo que encuentre.</div>
+                  </div>
+                  <div id="builtinRulesBox" class="mb-3">
+                    <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#builtinRules">
+                      <i class="bi bi-eye me-1"></i>Ver los filtros originales del radar
+                    </button>
+                    <div class="form-text">Estas palabras no están escritas en el perfil: vienen del código del radar. Los cuadros de abajo son lo que <b>tú le sumas</b> encima.</div>
+                    <div class="collapse mt-2" id="builtinRules">
+                      <div class="filters" id="brList"></div>
+                    </div>
+                  </div>
+                  <div class="row g-3">
+                    <div class="col-md-6">
+                      <label class="form-label" for="pRoles">Cargos que me sirven</label>
+                      <textarea id="pRoles" name="roles" rows="2" class="form-control form-control-sm" placeholder="desarrollador, analista de datos, qa"></textarea>
+                      <div class="form-text">Palabras que, en el título, hacen que la vacante suba de puntaje.</div>
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label" for="pExclude">Descartar si el título dice</label>
+                      <textarea id="pExclude" name="exclude" rows="2" class="form-control form-control-sm" placeholder="ventas, call center, practicante"></textarea>
+                      <div class="form-text">Corta la vacante de entrada, sin gastar peticiones al portal.</div>
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label" for="pSkills">Mis herramientas principales</label>
+                      <textarea id="pSkills" name="skills" rows="2" class="form-control form-control-sm" placeholder="python, sql, react"></textarea>
+                      <div class="form-text">Suman 12 puntos cada una.</div>
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label" for="pSkillsPlus">Las que manejo menos</label>
+                      <textarea id="pSkillsPlus" name="skills_plus" rows="2" class="form-control form-control-sm" placeholder="docker, aws"></textarea>
+                      <div class="form-text">Suman 5 puntos cada una.</div>
+                    </div>
+                    <div class="col-6 col-md-3">
+                      <label class="form-label" for="pYears">Años que acepto</label>
+                      <input id="pYears" name="max_years_experience" type="number" min="0" max="15" class="form-control form-control-sm">
+                      <div class="form-text">Años de experiencia: si la vacante pide más, se descarta.</div>
+                    </div>
+                    <div class="col-6 col-md-3">
+                      <label class="form-label" for="pMin">Puntaje mínimo</label>
+                      <input id="pMin" name="min_score" type="number" min="0" max="100" class="form-control form-control-sm">
+                    </div>
+                    <div class="col-12">
+                      <div class="form-check">
+                        <input class="form-check-input" type="checkbox" name="exclude_senior" id="pSenior">
+                        <label class="form-check-label" for="pSenior">Descartar cargos Senior, Líder o Jefe</label>
+                      </div>
+                    </div>
+                  </div>
+                </fieldset>
+
+                <div class="d-flex flex-wrap gap-2">
+                  <button type="submit" class="btn btn-sm btn-outline-secondary"><i class="bi bi-check2 me-1"></i>Guardar</button>
+                  <button type="button" class="btn btn-sm btn-primary" onclick="saveProfile(true)"><i class="bi bi-broadcast me-1"></i>Guardar y usar este perfil</button>
+                  <button type="button" class="btn btn-sm btn-danger-soft ms-auto" id="btnDeleteProfile" onclick="deleteProfile()"><i class="bi bi-trash3 me-1"></i>Borrar</button>
+                </div>
+                <div class="form-text mt-2">
+                  Al usar un perfil se vuelven a puntuar las vacantes que ya están en la base. Las que marcaste
+                  como guardadas o postuladas no se tocan. El siguiente escaneo usa sus consultas.
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== HERRAMIENTAS ===================== -->
+    <div class="tab-pane fade" id="tab-tools" role="tabpanel">
+      <div class="row g-3">
+        <div class="col-lg-6">
+          <div class="panel">
+            <div class="panel-head"><h2><i class="bi bi-window"></i>Navegador y portales</h2></div>
+            <div class="panel-body d-flex flex-wrap gap-2">
+              <button class="btn btn-sm btn-outline-secondary" onclick="openBrowser()"><i class="bi bi-box-arrow-up-right me-1"></i>Abrir el navegador del radar</button>
+              <button class="btn btn-sm btn-outline-secondary" onclick="syncApplications()"><i class="bi bi-arrow-repeat me-1"></i>Traer mis postulaciones</button>
+              <button class="btn btn-sm btn-outline-secondary" onclick="reevaluate()"><i class="bi bi-calculator me-1"></i>Volver a puntuar todo</button>
+              <button class="btn btn-sm btn-outline-secondary" id="notifBtn" onclick="askNotifications()"><i class="bi bi-bell me-1"></i>Avisarme al terminar un escaneo</button>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-head">
+              <h2><i class="bi bi-activity"></i>Estado</h2>
+              <button class="btn btn-sm btn-outline-secondary" onclick="loadGuard()" aria-label="Actualizar el estado"><i class="bi bi-arrow-clockwise"></i></button>
+            </div>
+            <div class="panel-body"><div id="guardStatus" class="small"></div></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h2><i class="bi bi-clipboard-data"></i>Último escaneo</h2></div>
+            <div class="panel-body"><div id="reportBox" class="small"></div></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head">
+              <h2><i class="bi bi-terminal"></i>Registro</h2>
+              <button class="btn btn-sm btn-outline-secondary" onclick="loadLog()"><i class="bi bi-arrow-clockwise"></i></button>
+            </div>
+            <div class="panel-body"><pre id="log"></pre></div>
+          </div>
+        </div>
+
+        <div class="col-lg-6">
+          <div class="panel">
+            <div class="panel-head"><h2><i class="bi bi-chat-square-quote"></i>Respuestas para formularios</h2></div>
+            <div class="panel-body">
+              <div class="search-wrap mb-2">
+                <i class="bi bi-search"></i>
+                <input id="qaInput" class="form-control form-control-sm" placeholder="Pega la pregunta de la postulación" oninput="qaSearch()">
+              </div>
+              <div id="qaList"></div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-head">
+              <h2><i class="bi bi-mortarboard"></i>Qué me falta aprender</h2>
+              <select id="skillsScope" class="form-select form-select-sm w-auto" onchange="loadSkills()">
+                <option value="relevant">Compatibles, guardadas y postuladas</option>
+                <option value="applied">Solo postuladas</option>
+                <option value="all">Todas</option>
+              </select>
+            </div>
+            <div class="table-responsive">
+              <table class="table align-middle">
+                <thead><tr><th>Tecnología</th><th class="text-end">Vacantes</th><th class="text-end">%</th><th>¿La tengo?</th></tr></thead>
+                <tbody id="skillsBody"></tbody>
+              </table>
+            </div>
+          </div>
         </div>
       </div>
     </div>
   </div>
 </div>
 
-<!-- Detalle de vacante -->
-<div class="modal fade" id="detailModal" tabindex="-1">
-  <div class="modal-dialog modal-lg modal-dialog-scrollable">
-    <div class="modal-content">
-      <div class="modal-header">
-        <div>
-          <h5 class="modal-title" id="dTitle"></h5>
-          <div class="small text-muted" id="dMeta"></div>
-        </div>
-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
-      </div>
-      <div class="modal-body">
-        <p class="small"><b>Diagnóstico:</b> <span id="dReason"></span></p>
-        <p class="small"><b>Requisitos:</b> <span id="dReqs"></span></p>
-        <div class="desc small border rounded p-2" id="dDesc"></div>
-      </div>
-      <div class="modal-footer" id="dActions"></div>
+<!-- Detalle de la vacante -->
+<div class="offcanvas offcanvas-end" tabindex="-1" id="detail" style="width:min(34rem,100vw)">
+  <div class="offcanvas-header">
+    <div>
+      <h2 class="h6 mb-1" id="dTitle"></h2>
+      <div class="text-body-secondary small" id="dCompany"></div>
     </div>
+    <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Cerrar"></button>
+  </div>
+  <div class="offcanvas-body">
+    <div class="chips mb-3" id="dChips"></div>
+    <div class="notice mb-3" id="dReason"></div>
+    <div class="mb-3" id="dReqsBox">
+      <h3 class="h6">Requisitos que detectó</h3>
+      <div class="chips" id="dReqs"></div>
+    </div>
+    <h3 class="h6">Descripción</h3>
+    <div class="desc text-body-secondary" id="dDesc"></div>
+  </div>
+  <div class="offcanvas-header border-top">
+    <div class="d-flex flex-wrap gap-2 w-100" id="dActions"></div>
   </div>
 </div>
+
+<div class="toast-stack" id="msg"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script src="/static/app.js"></script>

@@ -70,6 +70,53 @@ def keyword_regex(word: str) -> str:
     return r"\b" + "".join(out) + r"(?:es|s|a|as)?\b"
 
 
+def humanize_pattern(p: str) -> str:
+    """
+    Convierte un patrón de `services/filters.py` en algo legible para la pantalla de Perfiles.
+    'r"\\bvendedor(?:es|as?)?\\b"' -> 'vendedor'. No se vuelve a usar como regex: es solo para mostrar.
+    """
+    s = str(p)
+    s = s.replace("(?:", "(")
+    s = re.sub(r"\(\.\*\?(?:\\s[*+])?\s*\)\?", "… ", s)
+    s = re.sub(r"\[\\s-\]", "-", s)
+    s = re.sub(r"\((?:[/?\\()a-záéíóúñ]{1,6}\|)*[/?\\()a-záéíóúñ]{1,6}\)\?", "", s)
+    s = re.sub(r"\[([a-záéíóúñü0-9])[^\]]*\]", r"\1", s)
+    s = re.sub(r"\[[^\]]*\]", "", s)   # clases que quedaron, como [.,]
+    s = re.sub(r"\\b|\^|\$", "", s)
+    s = re.sub(r"\\s[*+]", " ", s)
+    s = s.replace(r"\.", ".").replace(r"\-", "-")
+    s = re.sub(r"\(([^()]*)\)", lambda m: m.group(1).replace("|", " / "), s)
+    s = s.replace("?", "").replace("\\", "")
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def describe_builtin_rules() -> Dict:
+    """Los filtros con los que nació el radar, en palabras, para mostrarlos en la app."""
+    from services.matcher import CANDIDATE_PROFILE
+
+    def words(patterns) -> List[str]:
+        seen, out = set(), []
+        for p in patterns:
+            w = humanize_pattern(p)
+            if w and w.lower() not in seen:
+                seen.add(w.lower())
+                out.append(w)
+        return out
+
+    senior = words([filters.SENIOR_TITLE_PATTERN.pattern])
+    return {
+        "roles": words(filters.PREFERRED_ROLES),
+        "exclude": words(filters.TITLE_NEGATIVE_PATTERNS),
+        "body_exclude": words(filters.BODY_NEGATIVE_PATTERNS),
+        "skills": list(CANDIDATE_PROFILE["primary_skills"]),
+        "skills_plus": list(CANDIDATE_PROFILE["secondary_skills"]),
+        "senior": senior[0].split(" / ") if senior else [],
+        "max_years_experience": filters.MAX_YEARS_EXPERIENCE,
+        "max_age_days": filters.MAX_AGE_DAYS,
+        "min_score": DEFAULT_PROFILE["min_score"],
+    }
+
+
 def _clean_list(value) -> List[str]:
     if isinstance(value, str):
         value = re.split(r"[,\n]", value)
@@ -269,14 +316,3 @@ def search_targets(p: Dict) -> Optional[Dict[str, List[Dict]]]:
             ind.append({"query": q, "location": "Colombia", "max_pages": 1, "remote": True})
             ee.append({"query": q, "max_pages": 1, "remote": True})
     return {"computrabajo": ct, "elempleo": ee, "indeed": ind}
-
-
-def alert_targets(p: Dict) -> Optional[Dict[str, List[Dict]]]:
-    """Consultas del modo alerta (página 1). None = listas del radar."""
-    t = search_targets(p)
-    if t is None:
-        return None
-    return {
-        "computrabajo": [{**x, "max_pages": 1} for x in t["computrabajo"]],
-        "elempleo": [{**x, "max_pages": 1} for x in t["elempleo"]],
-    }

@@ -164,6 +164,7 @@ class IndeedExtractor(BaseExtractor):
         self.detail_failures = 0   # descripciones que no se pudieron leer (¿cambió el marcado?)
         self.interactive = True    # si hay verificación, mostrar la ventana para que la persona la resuelva
         self.on_status = None      # callback(str) para mostrar mensajes en el dashboard
+        self.fromage = 7           # días que se le piden al portal (1, 3, 7 o 14: es su tope)
 
     def _new_controller(self):
         if self._controller_factory:
@@ -172,7 +173,7 @@ class IndeedExtractor(BaseExtractor):
         return BrowserController()
 
     @staticmethod
-    def build_url(query: str, location: str, remote: bool = False, start: int = 0) -> str:
+    def build_url(query: str, location: str, remote: bool = False, start: int = 0, fromage: int = 7) -> str:
         """
         URL de búsqueda. `remote=True` agrega la palabra "remoto" a la consulta.
         Verificado en vivo (2026-09-25): el filtro sc=0kf:attr(DSQF7) y l=remoto NO filtran en
@@ -180,8 +181,8 @@ class IndeedExtractor(BaseExtractor):
         con l=Colombia sí trae vacantes reales con ubicación "Desde casa".
         """
         q = f"{query} remoto" if remote and "remot" not in query.lower() else query
-        # fromage=7 (semana completa; luego se recorta a MAX_AGE_DAYS por el radar)
-        params = {"q": q, "l": location, "fromage": "7", "sort": "date"}
+        # fromage: ventana que filtra el propio portal (su tope es 14 días); el radar la recorta después.
+        params = {"q": q, "l": location, "fromage": str(fromage), "sort": "date"}
         if start:
             params["start"] = str(start)
         return f"{BASE_URL}/jobs?{urllib.parse.urlencode(params)}"
@@ -305,7 +306,7 @@ class IndeedExtractor(BaseExtractor):
             for idx, t in enumerate(targets, 1):
                 if on_progress:
                     on_progress(idx, t)
-                url = self.build_url(t["query"], t["location"], t.get("remote", False))
+                url = self.build_url(t["query"], t["location"], t.get("remote", False), fromage=self.fromage)
                 for _ in range(t.get("max_pages", 3)):
                     await asyncio.sleep(random.uniform(6.0, 10.0))
                     try:

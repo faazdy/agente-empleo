@@ -1,7 +1,7 @@
 """
 tests/test_app.py
 Suite de pruebas para el Radar de Empleo — Miguel Vásquez
-Cubre: DB ordering, matcher logic, API endpoints, alert scanner state
+Cubre: orden en la DB, lógica del matcher, endpoints de la API, sincronización diaria
 """
 
 import sys
@@ -278,14 +278,11 @@ class TestAPIEndpoints:
         assert "is_running" in st
         assert "total_queries" in st
 
-    async def test_alert_status(self):
+    async def test_quick_scan_excludes_indeed(self):
+        """La pasada corta no puede pedir Indeed (abre el navegador real)."""
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            r = await client.get("/api/alert/status")
-        assert r.status_code == 200
-        st = r.json()
-        assert "is_running" in st
-        assert "next_scan_at" in st
-        assert "last_new_count" in st
+            r = await client.post("/api/sync?portal=indeed&quick=true")
+        assert r.status_code == 400
 
     async def test_update_offer_status(self):
         """Cambiar el status de una vacante existente debe funcionar."""
@@ -317,40 +314,24 @@ class TestAPIEndpoints:
 
 
 # ─────────────────────────────────────────────
-# 4. ALERT SCANNER — Lógica de estado
+# 4. SINCRONIZACIÓN DIARIA
 # ─────────────────────────────────────────────
 
-class TestAlertScannerState:
-    def test_alert_state_has_required_fields(self):
-        from server import alert_state
-        assert "is_running" in alert_state
-        assert "next_scan_at" in alert_state
-        assert "last_new_count" in alert_state
-        assert "total_found_today" in alert_state
+class TestDailySync:
+    def test_daily_state_has_required_fields(self):
+        from server import daily_state
+        assert daily_state["enabled"] is True
+        assert ":" in daily_state["time"]
 
-    def test_next_scan_is_in_future(self):
-        from server import alert_state
-        if alert_state["next_scan_at"]:
-            next_dt = datetime.fromisoformat(alert_state["next_scan_at"].replace("Z", "+00:00"))
-            # Allow 1 second of clock skew
-            assert next_dt > datetime.now(timezone.utc) - timedelta(seconds=1), (
-                "next_scan_at debe estar en el futuro"
-            )
+    def test_daily_sync_waits_outside_active_hours(self):
+        from server import daily_sync_due
+        # 06:00 UTC = 01:00 Bogotá: fuera del horario activo, nunca toca
+        assert not daily_sync_due(datetime(2026, 9, 25, 6, 0, tzinfo=timezone.utc), state={})
 
-    def test_alert_interval_is_reasonable(self):
-        from server import ALERT_INTERVAL_SECONDS
-        assert 15 * 60 <= ALERT_INTERVAL_SECONDS <= 4 * 60 * 60, (
-            "El intervalo de alerta debe estar entre 15 min y 4 horas (anti-ban)"
-        )
-
-    def test_alert_targets_are_lightweight(self):
-        from server import ALERT_TARGETS
-        for t in ALERT_TARGETS:
-            assert t["max_pages"] == 1, (
-                f"Alert targets deben usar solo página 1 para no saturar. "
-                f"Query '{t['query']}' usa {t['max_pages']} páginas"
-            )
-        assert len(ALERT_TARGETS) <= 15, "Máximo 15 queries en modo alerta (anti-ban)"
+    def test_daily_sync_due_when_never_ran(self):
+        from server import daily_sync_due
+        # 15:00 UTC = 10:00 Bogotá, dentro del horario y sin registro previo
+        assert daily_sync_due(datetime(2026, 9, 25, 15, 0, tzinfo=timezone.utc), state={})
 
 
 # ─────────────────────────────────────────────
@@ -406,12 +387,12 @@ class TestScrapeGuard:
         g.clear("Indeed")
         assert g.blocked_until("Indeed") is None
 
-    def test_alert_window(self):
-        from core.guard import in_alert_window
+    def test_active_window(self):
+        from core.guard import in_active_window
         # 12:00 UTC = 07:00 Bogotá (abre); 02:00 UTC = 21:00 Bogotá (cerrado)
-        assert in_alert_window(datetime(2026, 9, 25, 12, 0, tzinfo=timezone.utc))
-        assert not in_alert_window(datetime(2026, 9, 26, 2, 0, tzinfo=timezone.utc))
-        assert not in_alert_window(datetime(2026, 9, 25, 8, 0, tzinfo=timezone.utc))  # 03:00 Bogotá
+        assert in_active_window(datetime(2026, 9, 25, 12, 0, tzinfo=timezone.utc))
+        assert not in_active_window(datetime(2026, 9, 26, 2, 0, tzinfo=timezone.utc))
+        assert not in_active_window(datetime(2026, 9, 25, 8, 0, tzinfo=timezone.utc))  # 03:00 Bogotá
 
 
 @pytest.mark.anyio
@@ -560,8 +541,8 @@ class TestFreshnessAndCoverage:
         assert is_promising_title("ingeniero programador")
 
     def test_remote_targets_use_correct_slug(self):
-        from server import SEARCH_TARGETS, ALERT_TARGETS
-        locs = {t["location"] for t in SEARCH_TARGETS + ALERT_TARGETS}
+        from server import SEARCH_TARGETS
+        locs = {t["location"] for t in SEARCH_TARGETS}
         assert "teletrabajo" not in locs and "remoto" in locs
 
 
