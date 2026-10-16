@@ -73,7 +73,7 @@ class MatcherEngine:
                 return 0.0, f"Descartada: Filtro excluyente en título ('{clean}')", "discarded"
 
         # 1b. Nivel: cargos senior / de liderazgo no corresponden a un primer empleo
-        if is_senior_title(title_lower):
+        if self.profile.get("exclude_senior", True) and is_senior_title(title_lower):
             return 0.0, "Descartada: Nivel Senior/Líder en el título (perfil Jr)", "discarded"
 
         # 1c. Años de experiencia exigidos
@@ -100,11 +100,15 @@ class MatcherEngine:
             if re.search(r"\b" + re.escape(skill) + r"\b", text_corpus)
         ]
 
-        # 5. Si no hay nada → descartar
-        if not has_role and not hard_hits:
+        # 5. Si no hay nada → descartar (salvo perfiles sin cargos ni tecnologías definidos)
+        no_criteria = not self.profile.get("preferred_roles") and not self.profile.get("hard_tech_skills")
+        if not has_role and not hard_hits and not no_criteria:
             return 0.0, "Descartada: Sin afinidad de cargo ni stack técnico", "discarded"
 
-        if has_role:
+        if no_criteria:
+            score += 35.0
+            reasons.append("Perfil sin filtro de cargo")
+        elif has_role:
             score += 35.0
             reasons.append("Rol Tech afín")
         else:
@@ -149,5 +153,8 @@ class MatcherEngine:
             reasons.append(f"Pide {years} año(s)")
 
         score = min(100.0, round(score, 1))
-        status = "matched" if score >= 20.0 else "discarded"
+        min_score = float(self.profile.get("min_score", 20.0))
+        if score < min_score:
+            reasons.append(f"Bajo el mínimo del perfil ({min_score:g})")
+        status = "matched" if score >= min_score else "discarded"
         return score, " | ".join(reasons), status

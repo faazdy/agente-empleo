@@ -41,8 +41,23 @@ def posted_age_days(posted_str) -> Optional[float]:
     return None
 
 
-def is_fresh(posted_str, max_days: int = MAX_AGE_DAYS) -> bool:
+# Reglas del perfil activo (services/profiles.py). None = reglas de este archivo tal cual.
+_ACTIVE_RULES = None
+
+
+def set_active_rules(rules) -> None:
+    global _ACTIVE_RULES
+    _ACTIVE_RULES = rules
+
+
+def get_active_rules():
+    return _ACTIVE_RULES
+
+
+def is_fresh(posted_str, max_days: Optional[int] = None) -> bool:
     """True si la vacante está dentro de la ventana. Si la fecha no se reconoce, se admite (no perder)."""
+    if max_days is None:
+        max_days = (_ACTIVE_RULES or {}).get("max_age_days") or MAX_AGE_DAYS
     age = posted_age_days(posted_str)
     return age is None or age <= max_days
 
@@ -223,8 +238,21 @@ def is_promising_title(title: str) -> bool:
     que el matcher para no gastar peticiones en vacantes que luego se descartan.
     """
     t = title.lower()
-    if first_negative(t) or is_senior_title(t):
+    r = _ACTIVE_RULES
+    if r is None:
+        if first_negative(t) or is_senior_title(t):
+            return False
+        if has_preferred_role(t):
+            return True
+        return any(re.search(r"\b" + re.escape(s) + r"\b", t) for s in HARD_TECH_SKILLS)
+    # Perfil activo
+    if any(re.search(p, t) for p in r.get("title_negative_patterns", [])):
         return False
-    if has_preferred_role(t):
+    if r.get("exclude_senior", True) and is_senior_title(t):
+        return False
+    roles, hard = r.get("preferred_roles", []), r.get("hard_tech_skills", [])
+    if not roles and not hard:
+        return True  # perfil sin cargos ni tecnologías: no se prefiltra por título
+    if any(re.search(p, t) for p in roles):
         return True
-    return any(re.search(r"\b" + re.escape(s) + r"\b", t) for s in HARD_TECH_SKILLS)
+    return any(re.search(r"\b" + re.escape(s) + r"\b", t) for s in hard)

@@ -8,7 +8,9 @@ La postulación la hace la persona desde el dashboard: el sistema **no** postula
 
 | Ruta | Qué hace |
 |---|---|
-| `server.py` | API + dashboard FastAPI (`http://localhost:8000`), sincronización y modo alerta |
+| `server.py` | API FastAPI (`http://localhost:8000`), sincronización, modo alerta y perfiles |
+| `static/index.html`, `static/app.js` | Dashboard: HTML + Bootstrap 5 y JavaScript sin frameworks (no se compila nada) |
+| `services/profiles.py` | Perfiles de búsqueda en `data/profiles.json`: consultas, ciudad, portales y filtros manuales |
 | `core/models.py` | Modelo `JobOffer` (hash por portal + empresa + cargo) |
 | `core/database.py` | SQLite `data/jobs.db`, triple candado anti-duplicados, ranking 60% afinidad + 40% frescura |
 | `core/guard.py` | Guardián anti-baneo: candado único, corte global, enfriamiento en `data/cooldown.json`, horario de alerta |
@@ -39,6 +41,19 @@ La postulación la hace la persona desde el dashboard: el sistema **no** postula
    prueba técnica, oferta, rechazado, cerrada), notas, tasa de respuesta y las que llevan más de 21 días sin respuesta.
 6. **Qué aprender** cuenta las tecnologías que piden las vacantes afines y las compara con el stack del
    Perfil Maestro (`services/skills_gap.py`).
+
+## Perfiles y filtros manuales
+
+- Pestaña **Perfiles**: cada perfil define qué buscar (consultas propias o las del radar, ciudad, ciudad/remoto,
+  portales, páginas, días hacia atrás) y cómo filtrar (cargos afines, palabras que descartan, tecnologías,
+  máximo de años de experiencia, puntaje mínimo, descartar Senior).
+- "Partir de las reglas del radar" suma tus palabras a las reglas de `services/filters.py`; desmarcado, solo cuentan las tuyas
+  (sirve para buscar otro tipo de cargo). El perfil **Miguel (por defecto)** se puede editar pero no borrar.
+- Al **activar** un perfil (selector del encabezado) se vuelven a puntuar las vacantes de la base, sin tocar postuladas ni guardadas;
+  el siguiente escaneo, el modo alerta y la sincronización diaria usan sus consultas.
+- En **Vacantes** hay filtros rápidos (texto, portal, modalidad, puntaje mínimo, excluir palabra) que solo afectan la vista
+  y se recuerdan en el navegador.
+- elempleo solo filtra por Bogotá: con otra ciudad, allí se busca únicamente remoto.
 
 ## Reglas anti-baneo
 
