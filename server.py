@@ -819,7 +819,9 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 @app.get("/", include_in_schema=False)
 def get_dashboard_html():
     """Dashboard: HTML + Bootstrap simple en static/ (sin compilar nada)."""
-    return FileResponse(STATIC_DIR / "index.html", media_type="text/html")
+    # no-cache: así el navegador (y Cloudflare) siempre piden la versión nueva de styles/app.
+    return FileResponse(STATIC_DIR / "index.html", media_type="text/html",
+                        headers={"Cache-Control": "no-cache"})
 
 
 

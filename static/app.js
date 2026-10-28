@@ -154,7 +154,7 @@ function filteredOffers() {
 
 function band(score) {
   if (score == null) return 'none';
-  return score >= 60 ? 'high' : score >= 35 ? 'mid' : 'low';
+  return score >= 75 ? 'top' : score >= 60 ? 'high' : score >= 35 ? 'mid' : 'low';
 }
 
 function chip(icon, text, attrs = '') {
@@ -166,24 +166,27 @@ function metaChips(o) {
   const mod = o.modality && norm(o.modality) !== norm(o.location) ? o.modality : '';
   const salary = o.salary && norm(o.salary) !== 'a convenir' ? o.salary : '';
   const remoto = (t) => (norm(t).includes('remot') ? 'data-kind="remoto"' : '');
-  return chip('globe2', o.portal, `data-portal="${norm(o.portal)}"`)
-    + chip('geo-alt', o.location, remoto(o.location))
-    + chip('laptop', mod, remoto(mod))
-    + chip('cash-coin', salary, 'data-kind="salario"');
+  const portal = o.portal
+    ? `<span class="chip" data-portal="${esc(norm(o.portal))}"><span class="dot"></span>${esc(o.portal)}</span>` : '';
+  const pill = (t, attrs = '') => (t ? `<span class="chip" ${attrs}>${esc(t)}</span>` : '');
+  return portal
+    + pill(o.location, remoto(o.location))
+    + pill(mod, remoto(mod))
+    + (salary ? pill(salary, 'data-kind="salario"') : pill('Salario a convenir', 'data-kind="sin-salario"'));
 }
 
 // Anillo de afinidad: el número con su % dentro de un aro que se llena según el puntaje.
 function scoreRing(score) {
-  const vuelta = 97.39;  // perímetro del círculo de radio 15.5
+  const vuelta = 150.8;  // perímetro del círculo de radio 24
   const v = score == null ? 0 : Math.max(0, Math.min(100, score));
   return `<div class="score" data-band="${band(score)}" data-bs-toggle="tooltip"
       data-bs-title="${score == null ? 'Sin puntuar' : score + '% de afinidad con tu perfil'}">
-    <svg class="ring" viewBox="0 0 36 36" aria-hidden="true">
-      <circle class="ring-bg" cx="18" cy="18" r="15.5"></circle>
-      <circle class="ring-fg" cx="18" cy="18" r="15.5"
+    <svg class="ring" viewBox="0 0 56 56" aria-hidden="true">
+      <circle class="ring-bg" cx="28" cy="28" r="24"></circle>
+      <circle class="ring-fg" cx="28" cy="28" r="24"
               stroke-dasharray="${vuelta}" stroke-dashoffset="${(vuelta * (1 - v / 100)).toFixed(2)}"></circle>
     </svg>
-    <span class="score-n">${score == null ? '—' : score}<i>%</i></span>
+    <span class="score-n">${score == null ? '—' : score}</span>
   </div>`;
 }
 
@@ -226,7 +229,7 @@ function renderOffers() {
     const [icon, text] = total
       ? ['funnel', 'Ninguna vacante pasa esos filtros. Prueba a limpiarlos.']
       : (EMPTY[status] || EMPTY.all);
-    $('offersList').innerHTML = `<div class="empty"><i class="bi bi-${icon}"></i>${esc(text)}</div>`;
+    $('offersList').innerHTML = `<div class="empty"><i class="bi bi-${icon}"></i><b>Nada por aquí</b>${esc(text)}</div>`;
     return;
   }
 
@@ -236,10 +239,10 @@ function renderOffers() {
     return `
     <article class="row-job">
       ${scoreRing(score)}
-      <div>
+      <div class="row-main">
         <a class="job-title" href="#" data-detail="${esc(o.id)}">${esc(o.title)}</a>
+        <p class="job-company">${esc(o.company || 'Empresa sin nombre')}</p>
         <div class="chips">
-          <span class="job-company">${esc(o.company || 'Empresa sin nombre')}</span>
           ${metaChips(o)}
           ${status === 'all' && st.label ? `<span class="chip chip-state"><i class="bi bi-${st.icon}"></i>${esc(st.label)}</span>` : ''}
         </div>
@@ -284,6 +287,40 @@ async function loadStats() {
     stats = await api('/api/stats');
     ['matched', 'favorite', 'applied', 'discarded'].forEach((k) => ($('cnt-' + k).textContent = stats[k] || 0));
     $('cnt-total').textContent = stats.total || 0;
+    renderPageHead();
+  } catch (_) {}
+  loadLastScan();
+}
+
+function activeProfileName() {
+  return profilesData.profiles.find((p) => p.id === profilesData.active)?.name || '';
+}
+
+// Subtítulo de Vacantes e inicial del perfil activo en la barra.
+function renderPageHead() {
+  const n = stats.matched || 0;
+  const name = activeProfileName();
+  $('pageSub').textContent = `${n} ${n === 1 ? 'oportunidad compatible' : 'oportunidades compatibles'}`
+    + (name ? ` con el perfil ${name}.` : '.');
+  $('profileInitial').textContent = (name.trim()[0] || '·').toUpperCase();
+}
+
+// "Actualizado hace 4 horas", según el último escaneo completo.
+function timeAgo(iso) {
+  const min = Math.round((Date.now() - new Date(iso)) / 60000);
+  if (isNaN(min)) return '';
+  if (min < 1) return 'hace un momento';
+  if (min < 60) return `hace ${min} min`;
+  const h = Math.round(min / 60);
+  if (h < 24) return h === 1 ? 'hace 1 hora' : `hace ${h} horas`;
+  const d = Math.round(h / 24);
+  return d === 1 ? 'ayer' : `hace ${d} días`;
+}
+
+async function loadLastScan() {
+  try {
+    const r = await api('/api/sync/report');
+    $('lastScan').textContent = r && r.finished_at ? `Actualizado ${timeAgo(r.finished_at)}` : 'Aún sin escanear';
   } catch (_) {}
 }
 
@@ -381,6 +418,7 @@ async function loadProfiles() {
     showScanDays();
   }
   renderProfileList();
+  renderPageHead();
 }
 
 function renderProfileList() {
